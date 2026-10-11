@@ -31,6 +31,13 @@ def run(*args, cwd=ROOT, capture=False):
     return result.stdout.decode("utf-8", errors="replace").strip() if capture else None
 
 
+def source_git(*args):
+    # In CI the checkout belongs to another user than the pspdev container's
+    # root, and git refuses to run there ("dubious ownership"). Trust the
+    # repository root for these read-only metadata queries.
+    return run("git", "-c", f"safe.directory={ROOT.as_posix()}", *args, capture=True)
+
+
 def configure(cmake, source, build, generator, *options):
     run(cmake, "-S", source, "-B", build, "-G", generator,
         "-DCMAKE_POLICY_VERSION_MINIMUM=3.10", *options)
@@ -85,9 +92,10 @@ def package(build):
     run(sys.executable, ROOT / "scripts" / "verify_import_layout.py", build, "--output", debug)
     metadata = {
         "status": "BUILD VERIFIED; PSP-1000/2000 EXPERIMENTAL, HARDWARE AND PSP-3000 REGRESSION TESTS REQUIRED",
-        "source_commit": run("git", "rev-parse", "HEAD", capture=True),
-        "source_branch": run("git", "branch", "--show-current", capture=True),
-        "source_dirty": bool(run("git", "status", "--porcelain", "--untracked-files=normal", capture=True)),
+        "source_commit": source_git("rev-parse", "HEAD"),
+        "source_branch": source_git("branch", "--show-current")
+                         or os.environ.get("GITHUB_HEAD_REF") or os.environ.get("GITHUB_REF_NAME", ""),
+        "source_dirty": bool(source_git("status", "--porcelain", "--untracked-files=normal")),
         "compiler": run("psp-gcc", "--version", capture=True).splitlines()[0],
         "dependencies": {**{name: revision for name, (_, revision, _) in PINS.items()},
                          **{name: revision for name, (_, revision) in SOURCE_PINS.items()}},
