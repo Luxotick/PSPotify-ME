@@ -44,6 +44,7 @@ add_executable(psp-dualcore-actions
     spotify/audiokey.c
     spotify/http.c
     spotify/log.c
+    spotify/memory.c
     spotify/tls.c
     spotify/webapi.c
     spotify/audiodecrypt.c
@@ -73,14 +74,20 @@ target_include_directories(psp-dualcore-actions SYSTEM PRIVATE
 target_link_libraries(psp-dualcore-actions
     me-stask
     me-core-mapper
+    bearssl
+    stbvorbis
+    stbimage
+    # Resolve runtime users before SDK imports, keeping each firmware import
+    # table contiguous (libcglue also imports sceNetInetGetErrno/utility).
+    m
+    c
+    cglue
+    pspsdk
     pspdebug
     pspctrl
     pspdisplay
     pspge
     pspaudio
-    bearssl
-    stbvorbis
-    stbimage
     psprtc
     pspnet_resolver
     pspnet_inet
@@ -90,9 +97,9 @@ target_link_libraries(psp-dualcore-actions
     pspaudiocodec
     psputility
     pspwlan
-    pspsdk
 )
 target_link_options(psp-dualcore-actions PRIVATE
+    "-Wl,--wrap=sceKernelAllocPartitionMemory"
     "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/psp-dualcore-actions.map")
 
 create_pbp_file(

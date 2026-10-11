@@ -34,7 +34,8 @@ Requires **Spotify Premium**.
 
 | | |
 |---|---|
-| Console | PSP-3000 family (tested on a PSP-3000) |
+| Tested console | PSP-3000, model 2, firmware 6.61 with ARK-5 (baseline hardware test) |
+| Experimental / untested | PSP-1000 / 01g: recognized IMG only; PSP-2000 / 02g: recognized T2 only. Other images refuse safely. Hardware feedback wanted. |
 | Firmware | 6.61 with ARK CFW. The Media Engine bring-up refuses any other firmware. |
 | Memory | Works with the default memory layout; ARK's extra-memory (highmem) option is not needed. |
 | Network | A Wi-Fi profile saved in the PSP's network settings |
@@ -91,6 +92,12 @@ More detail, plus troubleshooting, is in [docs/SETUP.md](docs/SETUP.md).
 
 Works on hardware: pairing, library browsing, covers, full-track playback with Media Engine decoding, the queue, pause, next/previous and volume.
 
+That hardware result is the existing PSP-3000 baseline. This experimental
+branch has **not** been tested on PSP-1000, PSP-2000 or for PSP-3000 regression.
+It logs device/firmware/ME-image information before deciding whether to start.
+BL, SD, unknown images, partial inspection failures and firmware other than
+6.61 refuse before ME patching or AVCODEC loading.
+
 ### Known issues
 
 - **Volume label:** the volume label in the top-right corner of the now-playing panel does not always display correctly.
@@ -99,7 +106,7 @@ Works on hardware: pairing, library browsing, covers, full-track playback with M
 
 ### Limitations
 
-- **Memory:** the whole track is buffered in RAM, which allows about 15 minutes at 160 kbps.
+- **Memory:** the whole track is buffered in RAM. PSP-3000 retains its 32 MiB file ceiling; actual capacity depends on runtime memory. PSP-1000 additionally skips tracks above its measured contiguous heap budget and bounds cover decoding to 512×512. The 8 MiB external reserve is unchanged. Streaming with an input ring buffer is a follow-up, not part of this experiment.
 - **Missing features:** no search, seeking or shuffle.
 - **Library limits:** up to 100 playlists and 500 tracks per list.
 - **Text:** the font is ASCII. Accented Latin letters are shown without their accents, and other scripts show `?`.

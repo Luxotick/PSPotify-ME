@@ -1,6 +1,7 @@
 #include "ui.h"
 #include "gfx.h"
 #include "log.h"
+#include "memory.h"
 #include "player.h"
 #include "session.h"
 #include "webapi.h"
@@ -236,6 +237,14 @@ static void load_cover(const spotify_track *t)
     http_stream_close(&s);
 
     int w = 0, h = 0, comp = 0;
+    /* Bound concurrent cover scratch/output allocations on the 32 MB model. */
+    if (spotify_device_model == 0 &&
+        (got < 2 || jpeg[0] != 0xff || jpeg[1] != 0xd8 ||
+         !stbi_info_from_memory(jpeg, (int)got, &w, &h, &comp) ||
+         w <= 0 || h <= 0 || w > 512 || h > 512 || (comp != 1 && comp != 3))) {
+        log_printf("UI: cover skipped: PSP-1000 requires <=512x512 grayscale/RGB JPEG\n");
+        return;
+    }
     unsigned char *rgba = stbi_load_from_memory(jpeg, (int)got, &w, &h, &comp, 4);
     if (!rgba) {
         log_printf("UI: cover decode failed (%u bytes)\n", (unsigned int)got);
@@ -409,6 +418,7 @@ int spotify_ui_run(volatile int *exit_requested)
     set_volume(volume_pct);
     load_playlists();
 
+    memory_log("pre-player-cover-threads");
     SceUID thid = sceKernelCreateThread("player", player_thread, 0x1C, 0x20000, 0, NULL);
     SceUID cover_thid = sceKernelCreateThread("cover", cover_thread, 0x30, 0x20000, 0, NULL);
     if (cover_thid >= 0) sceKernelStartThread(cover_thid, 0, NULL);

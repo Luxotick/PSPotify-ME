@@ -82,8 +82,12 @@ def package(build):
     shutil.copytree(ROOT / "licenses", game / "licenses", dirs_exist_ok=True)
     shutil.copy2(ROOT / "docs" / "SETUP.md", game / "SETUP.md")
     run(sys.executable, ROOT / "scripts" / "verify_artifacts.py", build, "--output", debug)
+    run(sys.executable, ROOT / "scripts" / "verify_import_layout.py", build, "--output", debug)
     metadata = {
-        "status": "BUILD VERIFIED; REAL PSP-3000 TEST REQUIRED",
+        "status": "BUILD VERIFIED; PSP-1000/2000 EXPERIMENTAL, HARDWARE AND PSP-3000 REGRESSION TESTS REQUIRED",
+        "source_commit": run("git", "rev-parse", "HEAD", capture=True),
+        "source_branch": run("git", "branch", "--show-current", capture=True),
+        "source_dirty": bool(run("git", "status", "--porcelain", "--untracked-files=normal", capture=True)),
         "compiler": run("psp-gcc", "--version", capture=True).splitlines()[0],
         "dependencies": {**{name: revision for name, (_, revision, _) in PINS.items()},
                          **{name: revision for name, (_, revision) in SOURCE_PINS.items()}},

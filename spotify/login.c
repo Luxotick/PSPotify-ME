@@ -148,11 +148,7 @@ int spotify_login(spotify_session *session, spotify_config *cfg)
             }
             return 0;
         } else if (cmd == PACKET_TYPE_LOGIN_FAIL) {
-            log_printf("LOGIN FAILED (0xAD)! Payload %u bytes:\n", (unsigned int)rx_len);
-            for (size_t k = 0; k < rx_len && k < 16; ++k) {
-                log_printf("%02X ", rx_buf[k]);
-            }
-            log_printf("\n");
+            log_printf("LOGIN FAILED (0xAD)! Payload %u bytes (omitted)\n", (unsigned int)rx_len);
             return -2;
         } else if (cmd == PACKET_TYPE_PING) {
             spotify_send_packet(session, PACKET_TYPE_PONG, rx_buf, rx_len);

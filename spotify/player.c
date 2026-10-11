@@ -2,9 +2,11 @@
 #include "audiodecrypt.h"
 #include "http.h"
 #include "log.h"
+#include "memory.h"
 #include "me_vorbis.h"
 #include "../common.h"
 #include <stdlib.h>
+#include <malloc.h>
 #include <string.h>
 #include <pspaudio.h>
 #include <psppower.h>
@@ -180,19 +182,42 @@ int spotify_play_ogg(const char *urls, unsigned int url_stride, int url_count,
             http_stream_close(&f.http);
         }
     }
-    if (status != 200 || content_length <= SPOTIFY_OGG_HEADER || content_length > 32u * 1024 * 1024) {
-        log_printf("PLAYER: no usable CDN response (%d, %u bytes)\n", status,
-                   (unsigned int)content_length);
+    if (status != 200 || !f.http.length_known || f.http.chunked ||
+        content_length <= SPOTIFY_OGG_HEADER || content_length > SIZE_MAX ||
+        content_length > 32u * 1024 * 1024) {
+        log_printf("PLAYER: track skipped: HTTP %d, missing/unknown/chunked or unsafe Content-Length=%llu\n",
+                   status, (unsigned long long)content_length);
         if (status > 0) http_stream_close(&f.http);
         return -1;
     }
     f.capacity = (size_t)content_length;
+    memory_log("pre-track");
+    size_t budget = 0;
+    if (spotify_device_model == 0) {
+        /* Keep cover/TLS mallocs from racing the snapshot and allocation. */
+        __malloc_lock(_REENT);
+        budget = memory_track_budget(memory_read());
+        if (f.capacity > budget) {
+            __malloc_unlock(_REENT);
+            log_printf("PLAYER: track skipped: Content-Length %llu exceeds safe allocation budget %u on PSP-1000\n",
+                       (unsigned long long)content_length, (unsigned int)budget);
+            http_stream_close(&f.http);
+            return -2;
+        }
+    }
     f.buf = malloc(f.capacity);
+    if (spotify_device_model == 0) {
+        __malloc_unlock(_REENT);
+        log_printf("MEM track-budget: model=0 content_length=%u safe_budget=%u heap_margin=4194304 kernel_guard=1048576\n",
+                   (unsigned int)f.capacity, (unsigned int)budget);
+    }
     if (!f.buf) {
-        log_printf("PLAYER: cannot allocate %u KB\n", (unsigned int)(f.capacity / 1024));
+        log_printf("PLAYER: track skipped: malloc(%u) failed\n", (unsigned int)f.capacity);
+        memory_log("track-allocation-failed");
         http_stream_close(&f.http);
         return -2;
     }
+    memory_log("post-track-allocation");
     audio_decrypt_init(&f.decrypt, key);
     f.open = 1;
     log_printf("PLAYER: %u KB Ogg Vorbis file\n", (unsigned int)(f.capacity / 1024));
@@ -202,12 +227,14 @@ int spotify_play_ogg(const char *urls, unsigned int url_stride, int url_count,
     /* Above the player and UI threads: with the ME pipeline the download
      * starved at 0x30 (255 KB in the first 10 s, 44 decoder waits). It sleeps
      * in recv most of the time, so a higher priority costs nothing. */
+    memory_log("pre-fetch-thread");
     SceUID thid = sceKernelCreateThread("ogg_fetch", fetch_thread, 0x18, 0x10000, 0, NULL);
     if (thid < 0 || sceKernelStartThread(thid, sizeof fp, &fp) < 0) {
         log_printf("PLAYER: fetch thread failed 0x%08X\n", (unsigned int)thid);
         if (thid >= 0) sceKernelDeleteThread(thid);
         http_stream_close(&f.http);
         free(f.buf);
+        memory_log("track-cleanup");
         return -3;
     }
 
@@ -345,5 +372,6 @@ out:
     sceKernelDeleteThread(thid);
     http_stream_close(&f.http);
     free(f.buf);
+    memory_log("track-cleanup");
     return ret;
 }

@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pspthreadman.h>
+#include <pspdebug.h>
 
 /* Desktop Linux identity as used by librespot: with the keymaster client id
  * the client token is granted without a hashcash challenge. */
@@ -129,6 +130,18 @@ static long flat_json_int(const char *json, const char *key, long fallback)
 #define FORM_HEADERS "Accept: application/json\r\n" \
                      "Content-Type: application/x-www-form-urlencoded\r\n"
 
+/* Log only protocol error enums, never free-form authentication responses. */
+static const char *oauth_error_name(const char *error)
+{
+    static const char *const known[] = {
+        "invalid_grant", "invalid_client", "invalid_request", "access_denied",
+        "authorization_pending", "slow_down", "expired_token", "unsupported_grant_type"
+    };
+    for (size_t i = 0; i < sizeof known / sizeof known[0]; ++i)
+        if (strcmp(error, known[i]) == 0) return known[i];
+    return "unrecognized_error";
+}
+
 static int token_response(char *access_token, size_t access_cap,
                           char *refresh_token, size_t refresh_cap)
 {
@@ -162,7 +175,7 @@ static int spotify_oauth_device_pair_unlocked(char *access_token, size_t access_
         flat_json_string(json, "user_code", user_code, sizeof user_code) < 0) {
         error[0] = '\0';
         flat_json_string(json, "error", error, sizeof error);
-        log_printf("PAIR: device authorize failed (HTTP %d %s)\n", status, error);
+        log_printf("PAIR: device authorize failed (HTTP %d %s)\n", status, oauth_error_name(error));
         return -2;
     }
     long interval = flat_json_int(json, "interval", 5);
@@ -173,9 +186,10 @@ static int spotify_oauth_device_pair_unlocked(char *access_token, size_t access_
     log_printf("\n========================================\n");
     log_printf("  PAIR THIS PSP WITH SPOTIFY:\n");
     log_printf("  open  spotify.com/pair  on your phone\n");
-    log_printf("  and enter the code:  %s\n", user_code);
+    log_printf("  pairing code shown on screen only\n");
     log_printf("========================================\n");
     if (show_code) show_code(user_code);
+    else pspDebugScreenPrintf("Pairing code: %s\n", user_code);
 
     n = snprintf(body, sizeof body,
                  "client_id=%s&grant_type=urn:ietf:params:oauth:grant-type:device_code"
@@ -192,7 +206,7 @@ static int spotify_oauth_device_pair_unlocked(char *access_token, size_t access_
         flat_json_string(json, "error", error, sizeof error);
         if (strcmp(error, "authorization_pending") == 0) continue;
         if (strcmp(error, "slow_down") == 0) { interval += 5; continue; }
-        log_printf("PAIR: token poll failed (HTTP %d %s)\n", status, error);
+        log_printf("PAIR: token poll failed (HTTP %d %s)\n", status, oauth_error_name(error));
         return -3;
     }
     log_printf("PAIR: code expired\n");
@@ -212,7 +226,7 @@ static int spotify_oauth_refresh_unlocked(const char *refresh_token, char *acces
     if (status != 200) {
         char error[64] = "";
         flat_json_string((const char *)resp_buf, "error", error, sizeof error);
-        log_printf("OAUTH: refresh failed (HTTP %d %s)\n", status, error);
+        log_printf("OAUTH: refresh failed (HTTP %d %s)\n", status, oauth_error_name(error));
         /* invalid_grant: the token was revoked or rotated away (e.g. by
          * another copy of spotify.cfg); the caller should forget it. */
         return strcmp(error, "invalid_grant") == 0 ? SPOTIFY_OAUTH_INVALID_GRANT : -2;
@@ -628,7 +642,7 @@ static void copy_str(char *out, size_t cap, const uint8_t *data, size_t len)
 static int sp_get(const char *url, size_t *len)
 {
     int status = request_all("GET", url, headers, NULL, 0, len);
-    if (status != 200) log_printf("LIBRARY: HTTP %d for %.70s\n", status, url);
+    if (status != 200) log_printf("LIBRARY: HTTP %d (request URL omitted)\n", status);
     return status;
 }
 

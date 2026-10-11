@@ -23,6 +23,8 @@
 #include "spotify/config.h"
 #include "spotify/http.h"
 #include "spotify/log.h"
+#include "spotify/memory.h"
+#include "spotify/device_policy.h"
 #include "spotify/player.h"
 #include "spotify/ui.h"
 #include <me-safe-task/me-stask.h>
@@ -45,6 +47,8 @@ PSP_MAIN_THREAD_ATTR(PSP_THREAD_ATTR_USER);
 #define FAIL_TARGET -1001
 #define FAIL_MEMORY -1002
 #define FAIL_PATH -1008
+_Static_assert(ME_CORE_T2_IMG_TABLE == 2 && ME_CORE_IMG_TABLE == 3,
+               "Device policy requires the audited pinned table IDs");
 
 // Static application system RAM survives every asynchronous job.
 static SharedTask shared_task;
@@ -56,8 +60,9 @@ typedef struct DeviceInfo {
     uint32_t firmware;
     int table;
     uint32_t witness;
+    int witness_available, table_available;
 } DeviceInfo;
-static DeviceInfo device;
+static DeviceInfo device = { .model = -1, .table = -1 };
 static void report_return(const char *operation, int ret);
 
 static int exit_callback(int arg1, int arg2, void *common)
@@ -101,6 +106,7 @@ static int network_probe(void)
     ret = sceNetApctlInit(0x1800, 0x30);
     if (ret < 0 && ret != (int)0x80410201) return ret;
     network_ready = 1;
+    memory_log("post-modules");
 
     if (sceWlanGetSwitchState() == 0) {
         log_printf("WARNING: WLAN switch is physically OFF!\n");
@@ -171,7 +177,9 @@ static int inspect_device(void *param)
     DeviceInfo *info = param;
     info->firmware = (uint32_t)sceKernelDevkitVersion();
     info->witness = hw(ME_CORE_KERNEL_ADDR | 0x18u);
+    info->witness_available = 1;
     info->table = meCoreGetTableIdFromWitnessWord();
+    info->table_available = 1;
     return 0;
 }
 static int reboot_device(void *unused)
@@ -179,11 +187,42 @@ static int reboot_device(void *unused)
     (void)unused;
     return scePowerRequestColdReset(0);
 }
-static void log_free_mem(const char *stage_name)
+static const char *generation(int model)
 {
-    log_printf("MEM %s: free %u KB, max block %u KB\n", stage_name,
-               (unsigned int)(sceKernelTotalFreeMemSize() / 1024),
-               (unsigned int)(sceKernelMaxFreeMemSize() / 1024));
+    switch (model) {
+    case 0: return "01g";
+    case 1: return "02g";
+    case 2: return "03g";
+    case 3: return "04g";
+    case 6: return "07g";
+    case 8: return "09g";
+    default: return "unknown";
+    }
+}
+static const char *table_name(int table)
+{
+    switch (table) {
+    case ME_CORE_BL_IMG_TABLE: return "ME_CORE_BL_IMG_TABLE";
+    case ME_CORE_SD_IMG_TABLE: return "ME_CORE_SD_IMG_TABLE";
+    case ME_CORE_T2_IMG_TABLE: return "ME_CORE_T2_IMG_TABLE";
+    case ME_CORE_IMG_TABLE: return "ME_CORE_IMG_TABLE";
+    default: return "UNKNOWN";
+    }
+}
+static int mappings_complete(int table)
+{
+    const unsigned int *mapping;
+    if (table == ME_CORE_T2_IMG_TABLE) mapping = t2ImgTable;
+    else if (table == ME_CORE_IMG_TABLE) mapping = ogImgTable;
+    else return 0;
+    /* Classic init, dispatch, decode and restoration; no table selection
+     * or writes during this check. See the pinned-source audit. */
+    static const unsigned int required[] = {43, 44, 48, 66, 67};
+    for (size_t i = 0; i < sizeof required / sizeof required[0]; ++i) {
+        unsigned int offset = mapping[required[i]];
+        if (!offset || (offset & 3u) || offset >= 0x00100000u) return 0;
+    }
+    return 1;
 }
 static void report_return(const char *operation, int ret)
 {
@@ -192,14 +231,40 @@ static void report_return(const char *operation, int ret)
 static int initialize(void)
 {
     sceKernelDcacheWritebackAll();
+    /* Firmware can still be logged if loading the model bridge fails. */
+    device.firmware = (uint32_t)sceKernelDevkitVersion();
     int ret = meSafeTaskGetModel();
-    if (ret < 0) return ret;
-    device.model = ret;
-    ret = meSafeTaskCall(inspect_device, &device);
-    if (ret < 0) return ret;
-    if ((device.model != 2 && device.model != 3 && device.model != 6 && device.model != 8) ||
-        device.firmware != 0x06060110u || device.table != ME_CORE_T2_IMG_TABLE)
+    if (ret < 0) report_return("inspect model/bridge", ret);
+    else {
+        device.model = ret;
+        spotify_device_model = ret;
+        ret = meSafeTaskCall(inspect_device, &device);
+        if (ret < 0) report_return("inspect witness/table", ret);
+    }
+    log_printf("DEVICE: model=%d generation=%s firmware=0x%08X\n", device.model,
+               generation(device.model), (unsigned int)device.firmware);
+    if (device.witness_available)
+        log_printf("DEVICE: me_witness=0x%08X\n", (unsigned int)device.witness);
+    else log_printf("DEVICE: me_witness=unavailable\n");
+    if (device.table_available)
+        log_printf("DEVICE: me_table=%d me_table_name=%s\n", device.table, table_name(device.table));
+    else log_printf("DEVICE: me_table=unavailable me_table_name=unavailable\n");
+    memory_log("post-inspection");
+    if (ret < 0) {
+        log_printf("REFUSED: device inspection failed; no ME patching performed\n");
+        return ret;
+    }
+    if (!device_policy_allows(device.model, device.firmware, device.table,
+                              device.witness, mappings_complete(device.table))) {
+        if (device.firmware != 0x06060110u)
+            log_printf("REFUSED: unsupported firmware 0x%08X on model %d\n",
+                       (unsigned int)device.firmware, device.model);
+        else log_printf("REFUSED: unsupported ME image table %d on model %d (or unsupported model)\n",
+                        device.table, device.model);
+        log_printf("No ME patching performed; use START to exit safely\n");
         return FAIL_TARGET;
+    }
+    log_printf("DEVICE: decision=recognized\n");
     const uintptr_t data_addr = (uintptr_t)&shared_task;
     const uintptr_t code_addr = (uintptr_t)me_loop;
     if ((data_addr & 63u) != 0 || data_addr < 0x08800000u ||
@@ -209,19 +274,27 @@ static int initialize(void)
     if (ret < 0) return ret;
     power_locked = 1;
     ret = meSafeTaskInitDispatcher();
+    report_return("ME dispatcher init", ret);
     if (ret < 0) return ret;
     dispatcher_ready = 1;
     unsafe_to_exit = 1;
     ret = sceUtilityLoadAvModule(PSP_AV_MODULE_AVCODEC);
+    report_return("ME load AVCODEC", ret);
     if (ret < 0) return ret;
     av_loaded = 1;
     sceKernelDcacheWritebackAll();
     ret = sceAudiocodecGetEDRAM(codec_data, 0x1000);
+    report_return("ME get EDRAM", ret);
     if (ret < 0) return ret;
     ret = sceAudiocodecReleaseEDRAM(codec_data);
+    report_return("ME release EDRAM", ret);
     if (ret < 0) return ret;
     unsafe_to_exit = 0;
-    log_printf("PSP-3000 (model %d) ME OK\n", device.model);
+    memory_log("post-ME");
+    if (device.model == 0 || device.model == 1)
+        log_printf("PSP-%s experimental ME path enabled (untested)\n",
+                   device.model == 0 ? "1000" : "2000");
+    else log_printf("PSP-3000 (model %d) ME OK\n", device.model);
     return 0;
 }
 int main(int argc, char **argv)
@@ -234,7 +307,7 @@ int main(int argc, char **argv)
         log_init(app_directory);
         spotify_config_set_dir(app_directory);
     }
-    log_free_mem("start");
+    memory_log("startup");
     if (init_result >= 0) {
         init_result = sceKernelCreateCallback("ME proof exit", exit_callback, NULL);
         if (init_result >= 0) {
@@ -248,7 +321,7 @@ int main(int argc, char **argv)
     } else if (network_probe() < 0) {
         log_printf("NETWORK FAILED\n");
     } else {
-        log_free_mem("after net init");
+        memory_log("post-network");
         http_init();
         if (spotify_ui_run(&exit_requested) == PLAYER_ERR_ME_TIMEOUT) {
             /* A decode may still be running on the ME: never unload under it. */
@@ -306,6 +379,7 @@ controls:
         sceUtilityUnloadNetModule(PSP_NET_MODULE_COMMON);
     }
     if (power_locked) scePowerUnlock(0);
+    log_printf("Exiting safely\n");
     sceKernelExitGame();
     return init_result < 0 ? 1 : 0;
 }

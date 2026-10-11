@@ -1,6 +1,7 @@
 #include "http.h"
 #include "log.h"
 #include "tls.h"
+#include "download_safety.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -95,6 +96,8 @@ static int parse_url(const char *url, url_parts *u)
     if (host_len == 0 || host_len >= sizeof u->host) return -1;
     memcpy(u->host, p, host_len);
     u->host[host_len] = '\0';
+    /* Credentials in URL userinfo must never reach host diagnostics. */
+    if (strchr(u->host, '@')) return -1;
     p += host_len;
     if (*p == ':') {
         char *end = NULL;
@@ -169,19 +172,21 @@ static int fill(http_stream *s)
     return 1;
 }
 
-/* Reads one line, strips CRLF. Over-long lines are truncated. */
+/* Reads one line, strips CRLF. Reject rather than trust truncated framing. */
 static int read_line(http_stream *s, char *line, size_t cap)
 {
     size_t n = 0;
     for (;;) {
         if (fill(s) <= 0) return -1;
         char ch = (char)s->buf[s->buf_pos++];
+        if (ch == '\0') return -1;
         if (ch == '\n') {
             if (n > 0 && line[n - 1] == '\r') --n;
             line[n] = '\0';
             return (int)n;
         }
-        if (n + 1 < cap) line[n++] = ch;
+        if (n + 1 >= cap) return -1;
+        line[n++] = ch;
     }
 }
 
@@ -212,6 +217,7 @@ static int open_once(http_stream *s, const char *method, const url_parts *u,
     memset(s, 0, sizeof *s);
     s->sock = -1;
     location[0] = '\0';
+    *content_length = 0; /* Each redirect has independent body framing. */
 
     s->sock = tcp_connect(u->host, u->port);
     if (s->sock < 0) return s->sock;
@@ -257,7 +263,7 @@ static int open_once(http_stream *s, const char *method, const url_parts *u,
     const char *sp = strchr(line, ' ');
     int status = sp ? (int)strtol(sp + 1, NULL, 10) : 0;
     if (strncmp(line, "HTTP/", 5) != 0 || status <= 0) {
-        log_printf("HTTP: bad status line: %.60s\n", line);
+        log_printf("HTTP: bad status line (content omitted)\n");
         return -6;
     }
 
@@ -266,11 +272,25 @@ static int open_once(http_stream *s, const char *method, const url_parts *u,
         int len = read_line(s, line, sizeof line);
         if (len < 0) return -7;
         if (len == 0) break;
+        if (line[0] == ' ' || line[0] == '\t') {
+            log_printf("HTTP: folded header refused\n");
+            return -9;
+        }
         if (strncasecmp(line, "Content-Length:", 15) == 0) {
-            *content_length = strtoull(line + 15, NULL, 10);
+            if (have_length || download_parse_length(line + 15, content_length) < 0) {
+                log_printf("HTTP: invalid or duplicate Content-Length; response refused\n");
+                return -9;
+            }
             have_length = 1;
-        } else if (strncasecmp(line, "Transfer-Encoding:", 18) == 0 &&
-                   strstr(line + 18, "chunked")) {
+        } else if (strncasecmp(line, "Transfer-Encoding:", 18) == 0) {
+            char *v = line + 18;
+            while (*v == ' ' || *v == '\t') ++v;
+            size_t vn = strlen(v);
+            while (vn && (v[vn - 1] == ' ' || v[vn - 1] == '\t')) v[--vn] = '\0';
+            if (s->chunked || strcasecmp(v, "chunked") != 0) {
+                log_printf("HTTP: unsupported Transfer-Encoding; response refused\n");
+                return -9;
+            }
             s->chunked = 1;
         } else if (strncasecmp(line, "Location:", 9) == 0) {
             const char *v = line + 9;
@@ -281,9 +301,14 @@ static int open_once(http_stream *s, const char *method, const url_parts *u,
     }
 
     if (s->chunked) {
+        if (have_length) {
+            log_printf("HTTP: ambiguous body framing; response refused\n");
+            return -9;
+        }
         *content_length = 0;
         s->remaining = 0;
     } else if (have_length) {
+        s->length_known = 1;
         s->remaining = *content_length;
     } else {
         s->remaining = BODY_UNTIL_CLOSE;
@@ -317,7 +342,7 @@ int http_stream_open_ex(http_stream *s, const char *method, const char *url,
         if (!redirect || location[0] == '\0') return status;
 
         http_stream_close(s);
-        log_printf("HTTP: %d -> %.70s\n", status, location);
+        log_printf("HTTP: redirect %d (destination omitted)\n", status);
         if (location[0] == '/') {
             int n = snprintf(u.path, sizeof u.path, "%s", location);
             if (n < 0 || (size_t)n >= sizeof u.path) return -1;

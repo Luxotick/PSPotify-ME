@@ -1,5 +1,6 @@
 #include "audiokey.h"
 #include "log.h"
+#include "proto_util.h"
 #include <stdio.h>
 #include <string.h>
 #include <pspdebug.h>
@@ -44,57 +45,17 @@ static void parse_mercury_event(const uint8_t *data, size_t len)
     i += 2 + part0_len; /* i now points past part 0 */
     if ((size_t)(hdr - data) + part0_len > len) return;
 
-    /* Parse protobuf fields from header part (field_num << 3 | wire_type) */
-    uint16_t status_code = 0;
-    const char *uri = "";
-    size_t h = 0;
-    while (h < part0_len) {
-        uint64_t tag = 0;
-        size_t shift = 0;
-        while (h < part0_len) {
-            tag |= (uint64_t)(hdr[h] & 0x7F) << shift;
-            if (!(hdr[h] & 0x80)) { h++; break; }
-            h++; shift += 7;
-        }
-        if (h >= part0_len) break;
-        uint32_t field_num = (uint32_t)(tag >> 3);
-        uint32_t wire_type = (uint32_t)(tag & 7);
-
-        if (wire_type == 0) {
-            uint64_t val = 0;
-            shift = 0;
-            while (h < part0_len) {
-                val |= (uint64_t)(hdr[h] & 0x7F) << shift;
-                if (!(hdr[h] & 0x80)) { h++; break; }
-                h++; shift += 7;
-            }
-            if (field_num == 1) status_code = (uint16_t)val;
-        } else if (wire_type == 2) {
-            uint64_t str_len = 0;
-            shift = 0;
-            while (h < part0_len) {
-                str_len |= (uint64_t)(hdr[h] & 0x7F) << shift;
-                if (!(hdr[h] & 0x80)) { h++; break; }
-                h++; shift += 7;
-            }
-            if (field_num == 2 && h + str_len <= part0_len)
-                uri = (const char *)&hdr[h];
-            h += str_len;
-        } else {
-            break;
-        }
+    /* Keep only numeric status: URI is length-delimited, not a C string,
+     * and arbitrary event/error bytes can contain session credentials. */
+    uint64_t status_code = 0;
+    pb_reader reader;
+    pb_field field;
+    pb_init(&reader, hdr, part0_len);
+    while (pb_next(&reader, &field) == 1) {
+        if (field.field == 1 && field.wire == 0) status_code = field.varint;
     }
-
-    log_printf("MERCURY: status=%u uri=%s flags=0x%02X count=%u\n",
-                         status_code, uri, flags, (unsigned int)count);
-    if (status_code >= 400 && i < len) {
-        size_t dump = len - i;
-        if (dump > 32) dump = 32;
-        log_printf("MERCURY ERROR: ");
-        for (size_t k = 0; k < dump; ++k)
-            log_printf("%02X ", data[i + k]);
-        log_printf("\n");
-    }
+    log_printf("MERCURY: status=%llu flags=0x%02X count=%u (payload omitted)\n",
+               (unsigned long long)status_code, flags, (unsigned int)count);
 }
 
 int spotify_request_audio_key(spotify_session *session,

@@ -14,6 +14,7 @@ typedef struct {
     struct tls_conn *tls;
     /* Body framing */
     int chunked;
+    int length_known;
     int chunk_started;
     uint64_t remaining;      /* bytes left in body (or current chunk) */
     int body_done;

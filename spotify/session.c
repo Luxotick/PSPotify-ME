@@ -1,6 +1,7 @@
 #include "session.h"
 #include "audiokey.h"
 #include "log.h"
+#include "memory.h"
 #include "login.h"
 #include "webapi.h"
 #include <stdio.h>
@@ -143,6 +144,7 @@ int spotify_ctx_start(spotify_ctx *c, const spotify_ui_hooks *ui)
     if (resolve_lock < 0) resolve_lock = sceKernelCreateSema("resolve", 0, 1, 1, NULL);
     static spotify_ctx *self;
     self = c;
+    memory_log("pre-keepalive-thread");
     c->keepalive_thread = sceKernelCreateThread("ap_keepalive", keepalive_thread, 0x20,
                                                 0x10000, 0, NULL);
     if (c->keepalive_thread >= 0) sceKernelStartThread(c->keepalive_thread, sizeof self, &self);
