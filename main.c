@@ -61,6 +61,10 @@ typedef struct DeviceInfo {
     int table;
     uint32_t witness;
     int witness_available, table_available;
+    /* Original ME image words at the patch sites and mapped functions,
+     * read before any patching, to compare firmware versions from logs. */
+    uint32_t probe_addr[16], probe_word[16][2];
+    int probe_count;
 } DeviceInfo;
 static DeviceInfo device = { .model = -1, .table = -1 };
 static void report_return(const char *operation, int ret);
@@ -172,6 +176,21 @@ static int network_probe(void)
 }
 
 // These callbacks run on SC in kernel mode through the embedded bridge PRX.
+/* Classic init, dispatch, decode and restoration; no table selection
+ * or writes during this check. See the pinned-source audit. */
+static const unsigned int required_mappings[] = {43, 44, 48, 66, 67};
+/* Patch sites hardcoded in the pinned safe-task (me-stask.c init()). */
+static const uint32_t t2_patch_sites[] = {0x8832162cu, 0x8838c780u, 0x8834f3b0u};
+static const uint32_t og_patch_sites[] = {0x88312f4cu, 0x8837b1c0u, 0x88365038u};
+#define SYSCALL_ROUTINE_PATCH_SITE 0x883004bcu
+static void probe_me_word(DeviceInfo *info, uint32_t addr)
+{
+    if (info->probe_count >= (int)(sizeof info->probe_addr / sizeof info->probe_addr[0])) return;
+    info->probe_addr[info->probe_count] = addr;
+    info->probe_word[info->probe_count][0] = hw(addr);
+    info->probe_word[info->probe_count][1] = hw(addr + 4u);
+    info->probe_count++;
+}
 static int inspect_device(void *param)
 {
     DeviceInfo *info = param;
@@ -180,6 +199,18 @@ static int inspect_device(void *param)
     info->witness_available = 1;
     info->table = meCoreGetTableIdFromWitnessWord();
     info->table_available = 1;
+    const uint32_t *sites = NULL;
+    const unsigned int *mapping = NULL;
+    if (info->table == ME_CORE_T2_IMG_TABLE) { sites = t2_patch_sites; mapping = t2ImgTable; }
+    else if (info->table == ME_CORE_IMG_TABLE) { sites = og_patch_sites; mapping = ogImgTable; }
+    if (sites == NULL) return 0;
+    probe_me_word(info, SYSCALL_ROUTINE_PATCH_SITE);
+    for (int i = 0; i < 3; ++i) probe_me_word(info, sites[i]);
+    for (size_t i = 0; i < sizeof required_mappings / sizeof required_mappings[0]; ++i) {
+        unsigned int offset = mapping[required_mappings[i]];
+        if (offset && !(offset & 3u) && offset < 0x00100000u)
+            probe_me_word(info, ME_CORE_KERNEL_ADDR + offset);
+    }
     return 0;
 }
 static int reboot_device(void *unused)
@@ -215,11 +246,8 @@ static int mappings_complete(int table)
     if (table == ME_CORE_T2_IMG_TABLE) mapping = t2ImgTable;
     else if (table == ME_CORE_IMG_TABLE) mapping = ogImgTable;
     else return 0;
-    /* Classic init, dispatch, decode and restoration; no table selection
-     * or writes during this check. See the pinned-source audit. */
-    static const unsigned int required[] = {43, 44, 48, 66, 67};
-    for (size_t i = 0; i < sizeof required / sizeof required[0]; ++i) {
-        unsigned int offset = mapping[required[i]];
+    for (size_t i = 0; i < sizeof required_mappings / sizeof required_mappings[0]; ++i) {
+        unsigned int offset = mapping[required_mappings[i]];
         if (!offset || (offset & 3u) || offset >= 0x00100000u) return 0;
     }
     return 1;
@@ -249,6 +277,9 @@ static int initialize(void)
     if (device.table_available)
         log_printf("DEVICE: me_table=%d me_table_name=%s\n", device.table, table_name(device.table));
     else log_printf("DEVICE: me_table=unavailable me_table_name=unavailable\n");
+    for (int i = 0; i < device.probe_count; ++i)
+        log_printf("DEVICE: me_probe 0x%08X = %08X %08X\n", (unsigned int)device.probe_addr[i],
+                   (unsigned int)device.probe_word[i][0], (unsigned int)device.probe_word[i][1]);
     memory_log("post-inspection");
     if (ret < 0) {
         log_printf("REFUSED: device inspection failed; no ME patching performed\n");
