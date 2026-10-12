@@ -34,8 +34,8 @@ Requires **Spotify Premium**.
 
 | | |
 |---|---|
-| Tested console | PSP-3000, model 2, firmware 6.61 with ARK-5 (baseline hardware test) |
-| Experimental / untested | PSP-1000 / 01g: recognized IMG only; PSP-2000 / 02g: recognized T2 only. Other images refuse safely. Hardware feedback wanted. |
+| Tested consoles | PSP-3000 (model 2, 6.61, ARK-5). PSP-2000 / 02g: full playback confirmed by a volunteer. |
+| Experimental | PSP-1000 / 01g: recognized IMG only, not tested on hardware yet. Other Media Engine images refuse safely. Hardware feedback wanted. |
 | Firmware | 6.61 with ARK CFW. The Media Engine bring-up refuses any other firmware. |
 | Memory | Works with the default memory layout; ARK's extra-memory (highmem) option is not needed. |
 | Network | A Wi-Fi profile saved in the PSP's network settings |
@@ -92,22 +92,33 @@ More detail, plus troubleshooting, is in [docs/SETUP.md](docs/SETUP.md).
 
 Works on hardware: pairing, library browsing, covers, full-track playback with Media Engine decoding, the queue, pause, next/previous and volume.
 
-That hardware result is the existing PSP-3000 baseline. This experimental
-branch has **not** been tested on PSP-1000, PSP-2000 or for PSP-3000 regression.
-It logs device/firmware/ME-image information before deciding whether to start.
-BL, SD, unknown images, partial inspection failures and firmware other than
-6.61 refuse before ME patching or AVCODEC loading.
+Confirmed on a PSP-3000 and, thanks to a volunteer, on a PSP-2000. PSP-1000 support is experimental and has not been tested yet.
+The app logs device, firmware and Media Engine image information before it starts the Media Engine.
+BL, SD, unknown images, partial inspection failures and firmware other than 6.61 refuse before any Media Engine patching or AVCODEC loading.
 
 ### Known issues
 
 - **Volume label:** the volume label in the top-right corner of the now-playing panel does not always display correctly.
 - **Track switching:** switching tracks can take a few seconds. Earlier builds could hang on a switch, and the fix still needs wider testing.
 - **Liked Songs:** a large Liked Songs list takes a while to load the first time.
+- **Unplayable tracks show only "ERROR":** when Spotify refuses a track's key (`AUDIOKEY: ... error code 0x0001` in the log), the screen just says ERROR. This almost always means the account is not Premium. It can also mean the track is not available in your region.
+- **Slow failures:** after a refused key the app reconnects to Spotify before giving up on the track. That wastes about 1.5 s per track and rewrites `spotify.cfg` each time.
+- **Region-restricted tracks:** when Spotify replaces a track with an alternative version, the key is still requested with the original track's ID. Those tracks may fail even on Premium.
+- **PSP-3000 regression test:** the PSP-1000/2000 changes in this release were tested on a PSP-2000 but not yet re-tested on a PSP-3000.
+
+### TODO
+
+- Show a readable reason ("Premium required", "not available") instead of ERROR.
+- Reconnect only on network errors, not when Spotify refuses a key.
+- Request keys for alternative tracks with the alternative's ID.
+- Stream large tracks through a ring buffer instead of keeping the whole file in RAM.
+- Search, seeking and shuffle.
+- A quieter log mode that writes less to the Memory Stick.
 
 ### Limitations
 
-- **Memory:** the whole track is buffered in RAM. PSP-3000 retains its 32 MiB file ceiling; actual capacity depends on runtime memory. PSP-1000 additionally skips tracks above its measured contiguous heap budget and bounds cover decoding to 512×512. The 8 MiB external reserve is unchanged. Streaming with an input ring buffer is a follow-up, not part of this experiment.
-- **Missing features:** no search, seeking or shuffle.
+- **Memory:** the whole track is buffered in RAM. PSP-3000 retains its 32 MiB file ceiling; actual capacity depends on runtime memory. PSP-1000 additionally skips tracks above its measured contiguous heap budget and bounds cover decoding to 512×512. The 8 MiB external reserve is unchanged. Streaming through a ring buffer is on the TODO list.
+- **Missing features:** no search, seeking or shuffle yet.
 - **Library limits:** up to 100 playlists and 500 tracks per list.
 - **Text:** the font is ASCII. Accented Latin letters are shown without their accents, and other scripts show `?`.
 - **Errors:** a track that fails to resolve is skipped. After three failures in a row playback stops.
