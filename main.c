@@ -225,6 +225,7 @@ static const char *generation(int model)
     case 1: return "02g";
     case 2: return "03g";
     case 3: return "04g";
+    case 4: return "05g";
     case 6: return "07g";
     case 8: return "09g";
     default: return "unknown";
@@ -322,8 +323,9 @@ static int initialize(void)
     if (ret < 0) return ret;
     unsafe_to_exit = 0;
     memory_log("post-ME");
-    if (device.model == 0 || device.model == 1)
-        log_printf("PSP-%s experimental ME path enabled (untested)\n",
+    if (device.model == 4) log_printf("PSP Go experimental ME path enabled (untested)\n");
+    else if (device.model == 0 || device.model == 1)
+        log_printf("PSP-%s experimental ME path enabled\n",
                    device.model == 0 ? "1000" : "2000");
     else log_printf("PSP-3000 (model %d) ME OK\n", device.model);
     return 0;
