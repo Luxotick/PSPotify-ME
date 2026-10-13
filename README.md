@@ -34,9 +34,9 @@ Requires **Spotify Premium**.
 
 | | |
 |---|---|
-| Tested consoles | PSP-3000 (model 2, 6.61, ARK-5). PSP-2000 / 02g: full playback confirmed by a volunteer. |
-| Experimental | PSP-1000 / 01g: recognized IMG only, not tested on hardware yet. Other Media Engine images refuse safely. Hardware feedback wanted. |
-| Firmware | 6.61 with ARK CFW. The Media Engine bring-up refuses any other firmware. |
+| Tested consoles | PSP-1000, PSP-2000, PSP-3000 and PSP Go. The PSP-3000 is mine; the others were confirmed by volunteers. |
+| Untested | PSP-E1000 (Street) and anything else. Unknown models and Media Engine images refuse safely. Hardware feedback wanted. |
+| Firmware | 6.61 with ARK CFW. 6.60 is also accepted on the PSP-1000 (tested) and the PSP Go. The Media Engine bring-up refuses any other firmware. |
 | Memory | Works with the default memory layout; ARK's extra-memory (highmem) option is not needed. |
 | Network | A Wi-Fi profile saved in the PSP's network settings |
 | Account | Spotify Premium |
@@ -92,9 +92,9 @@ More detail, plus troubleshooting, is in [docs/SETUP.md](docs/SETUP.md).
 
 Works on hardware: pairing, library browsing, covers, full-track playback with Media Engine decoding, the queue, pause, next/previous and volume.
 
-Confirmed on a PSP-3000 and, thanks to a volunteer, on a PSP-2000. PSP-1000 support is experimental and has not been tested yet.
+Confirmed on the PSP-1000, PSP-2000, PSP-3000 and PSP Go, thanks to volunteers with hardware I don't have.
 The app logs device, firmware and Media Engine image information before it starts the Media Engine.
-BL, SD, unknown images, partial inspection failures and firmware other than 6.61 refuse before any Media Engine patching or AVCODEC loading.
+BL, SD, unknown images, partial inspection failures and unsupported firmware refuse before any Media Engine patching or AVCODEC loading.
 
 ### Known issues
 
@@ -104,7 +104,8 @@ BL, SD, unknown images, partial inspection failures and firmware other than 6.61
 - **Unplayable tracks show only "ERROR":** when Spotify refuses a track's key (`AUDIOKEY: ... error code 0x0001` in the log), the screen just says ERROR. This almost always means the account is not Premium. It can also mean the track is not available in your region.
 - **Slow failures:** after a refused key the app reconnects to Spotify before giving up on the track. That wastes about 1.5 s per track and rewrites `spotify.cfg` each time.
 - **Region-restricted tracks:** when Spotify replaces a track with an alternative version, the key is still requested with the original track's ID. Those tracks may fail even on Premium.
-- **PSP-3000 regression test:** the PSP-1000/2000 changes in this release were tested on a PSP-2000 but not yet re-tested on a PSP-3000.
+- **PSP Go internal storage:** the PSP Go was tested from a Memory Stick Micro. Running from internal storage should work but has not been tested.
+- **Slow exit:** quitting while the next track is being prepared can take a few seconds.
 
 ### TODO
 
@@ -114,6 +115,7 @@ BL, SD, unknown images, partial inspection failures and firmware other than 6.61
 - Stream large tracks through a ring buffer instead of keeping the whole file in RAM.
 - Search, seeking and shuffle.
 - A quieter log mode that writes less to the Memory Stick.
+- Stop preparing the next track as soon as you quit.
 
 ### Limitations
 

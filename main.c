@@ -323,11 +323,9 @@ static int initialize(void)
     if (ret < 0) return ret;
     unsafe_to_exit = 0;
     memory_log("post-ME");
-    if (device.model == 4) log_printf("PSP Go experimental ME path enabled (untested)\n");
-    else if (device.model == 0 || device.model == 1)
-        log_printf("PSP-%s experimental ME path enabled\n",
-                   device.model == 0 ? "1000" : "2000");
-    else log_printf("PSP-3000 (model %d) ME OK\n", device.model);
+    log_printf("%s (model %d) ME OK\n",
+               device.model == 0 ? "PSP-1000" : device.model == 1 ? "PSP-2000"
+               : device.model == 4 ? "PSP Go" : "PSP-3000", device.model);
     return 0;
 }
 int main(int argc, char **argv)

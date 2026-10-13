@@ -91,7 +91,7 @@ def package(build):
     run(sys.executable, ROOT / "scripts" / "verify_artifacts.py", build, "--output", debug)
     run(sys.executable, ROOT / "scripts" / "verify_import_layout.py", build, "--output", debug)
     metadata = {
-        "status": "BUILD VERIFIED; PSP-1000/2000 EXPERIMENTAL, HARDWARE AND PSP-3000 REGRESSION TESTS REQUIRED",
+        "status": "BUILD VERIFIED",
         "source_commit": source_git("rev-parse", "HEAD"),
         "source_branch": source_git("branch", "--show-current")
                          or os.environ.get("GITHUB_HEAD_REF") or os.environ.get("GITHUB_REF_NAME", ""),
