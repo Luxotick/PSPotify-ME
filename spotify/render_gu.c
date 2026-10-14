@@ -2,7 +2,11 @@
 #include "../ui/render.h"
 #include <malloc.h>
 #include <pspdisplay.h>
+/* pspgu.h declares a few functions without prototypes. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstrict-prototypes"
 #include <pspgu.h>
+#pragma GCC diagnostic pop
 #include <pspkernel.h>
 #include <stdlib.h>
 #include <string.h>

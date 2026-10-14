@@ -99,6 +99,15 @@ static int have_palette;
 
 /* ------------------------------------------------------------ helpers */
 
+/* Copies src into dst (cap bytes), cutting it if needed. */
+static void copy_text(char *dst, size_t cap, const char *src)
+{
+    size_t n = strlen(src);
+    if (n >= cap) n = cap - 1;
+    memcpy(dst, src, n);
+    dst[n] = '\0';
+}
+
 static uint32_t row_color(const char *key)
 {
     static const uint32_t colors[] = {
@@ -204,7 +213,7 @@ static void scan_themes(void)
     memset(&e, 0, sizeof e);
     while (sceIoDread(d, &e) > 0 && theme_count < MAX_THEMES) {
         if (FIO_S_ISDIR(e.d_stat.st_mode) && e.d_name[0] != '.')
-            snprintf(theme_names[theme_count++], sizeof theme_names[0], "%s", e.d_name);
+            copy_text(theme_names[theme_count++], sizeof theme_names[0], e.d_name);
         memset(&e, 0, sizeof e);
     }
     sceIoDclose(d);
@@ -243,7 +252,7 @@ static void fill_settings(void)
     for (int k = 0; k < theme_count; ++k) {
         r = &settings_rows[k + 1];
         memset(r, 0, sizeof *r);
-        snprintf(r->title, sizeof r->title, "%s", theme_names[k]);
+        copy_text(r->title, sizeof r->title, theme_names[k]);
         snprintf(r->subtitle, sizeof r->subtitle,
                  k == theme_active ? "Theme \xC2\xB7 active" : "Theme");
         r->color = theme_swatch[k];
@@ -282,7 +291,7 @@ static void load_settings(void)
         while (fgets(line, sizeof line, f)) {
             char key[32], value[64];
             if (sscanf(line, " %31[a-z_] = %63[^\r\n]", key, value) != 2) continue;
-            if (!strcmp(key, "theme")) snprintf(wanted, sizeof wanted, "%s", value);
+            if (!strcmp(key, "theme")) copy_text(wanted, sizeof wanted, value);
             else if (!strcmp(key, "cover_colors")) cover_colors_on = strcmp(value, "off") != 0;
         }
         fclose(f);
@@ -402,7 +411,7 @@ static void play_from(const spotify_track *tracks, int count, int idx, int key, 
         memcpy(queue, tracks, sizeof tracks[0] * (size_t)count);
         queue_len = count;
         queue_key = key;
-        snprintf(queue_name, sizeof queue_name, "%s", name);
+        copy_text(queue_name, sizeof queue_name, name);
     }
     log_printf("UI: play request %d (list %d, %d tracks)\n", idx, key, queue_len);
     start_track(idx);
@@ -483,7 +492,7 @@ static void load_cover(const spotify_track *t)
     while (cover_pending && !player_quit) sceKernelDelayThread(10000);
     memcpy(cover_argb, scaled, sizeof cover_argb);
     palette_extract(cover_argb, COVER * COVER, &cover_colors);
-    snprintf(cover_id, sizeof cover_id, "%s", t->id);
+    copy_text(cover_id, sizeof cover_id, t->id);
     cover_pending = 1;
     log_printf("UI: cover %dx%d\n", w, h);
 }
@@ -513,8 +522,8 @@ static void track_rows(const spotify_track *tracks, int count, ui_row *rows)
     for (int i = 0; i < count; ++i) {
         ui_row *r = &rows[i];
         memset(r, 0, sizeof *r);
-        snprintf(r->title, sizeof r->title, "%s", tracks[i].name[0] ? tracks[i].name : tracks[i].id);
-        snprintf(r->subtitle, sizeof r->subtitle, "%s", tracks[i].artist);
+        copy_text(r->title, sizeof r->title, tracks[i].name[0] ? tracks[i].name : tracks[i].id);
+        copy_text(r->subtitle, sizeof r->subtitle, tracks[i].artist);
         r->color = row_color(tracks[i].id);
     }
 }
@@ -556,9 +565,9 @@ static void sync_state(void)
         const spotify_track *t = &queue[idx];
         if (idx != shown_index || strcmp(shown_id, t->id) != 0) {
             shown_index = idx;
-            snprintf(shown_id, sizeof shown_id, "%s", t->id);
-            snprintf(n->title, sizeof n->title, "%s", t->name);
-            snprintf(n->artist, sizeof n->artist, "%s", t->artist);
+            copy_text(shown_id, sizeof shown_id, t->id);
+            copy_text(n->title, sizeof n->title, t->name);
+            copy_text(n->artist, sizeof n->artist, t->artist);
             n->color = row_color(t->id);
             n->cover = NULL;
             mark_playing(t->id);
@@ -575,14 +584,14 @@ static void sync_state(void)
             snprintf(n->album, sizeof n->album, "Couldn't play this track (Spotify Premium needed?)");
         else
             snprintf(n->album, sizeof n->album, "From %s", queue_name);
-        snprintf(n->next, sizeof n->next, "%s", idx + 1 < queue_len ? queue[idx + 1].name : "");
+        copy_text(n->next, sizeof n->next, idx + 1 < queue_len ? queue[idx + 1].name : "");
     }
 
     if (cover_pending) {
         if (!strcmp(cover_id, shown_id)) {
             r_tex_destroy(cover_tex);
             cover_tex = r_tex_create(COVER, COVER, cover_argb, 1);
-            snprintf(cover_tex_id, sizeof cover_tex_id, "%s", cover_id);
+            copy_text(cover_tex_id, sizeof cover_tex_id, cover_id);
             have_palette = 1;
             retint(0);
             fill_settings();
@@ -593,7 +602,7 @@ static void sync_state(void)
 
     ScePspDateTime now;
     if (sceRtcGetCurrentClockLocalTime(&now) == 0)
-        snprintf(xmb.clock, sizeof xmb.clock, "%02d:%02d", now.hour, now.minute);
+        snprintf(xmb.clock, sizeof xmb.clock, "%02d:%02d", now.hour % 24, now.minute % 60);
 }
 
 /* Returns 1 when the user asked to quit. */
@@ -608,7 +617,7 @@ static int handle(const ui_event *e)
         } else if (e->category == UI_CAT_PLAYLISTS && e->level == 0) {
             int p = e->index + 1;
             ui_list *l = &xmb.lists[UI_CAT_PLAYLISTS][1];
-            snprintf(l->header, sizeof l->header, "%s", playlists[p].name);
+            copy_text(l->header, sizeof l->header, playlists[p].name);
             l->rows = opened_rows;
             l->count = 0;
             l->loading = 1;
@@ -678,7 +687,7 @@ static void load_playlists(void)
         const spotify_playlist *p = &playlists[i + 1];
         ui_row *r = &playlist_rows[i];
         memset(r, 0, sizeof *r);
-        snprintf(r->title, sizeof r->title, "%s", p->name);
+        copy_text(r->title, sizeof r->title, p->name);
         if (p->total >= 0) snprintf(r->subtitle, sizeof r->subtitle, "Playlist \xC2\xB7 %d songs", p->total);
         else snprintf(r->subtitle, sizeof r->subtitle, "Playlist");
         r->color = row_color(p->name);

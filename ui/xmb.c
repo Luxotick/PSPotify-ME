@@ -415,7 +415,7 @@ static void draw_mini(const ui_state *ui)
     draw_progress(ui, 0, y, SCREEN_W, 2, 1.0f);
     draw_cover(n->cover, n->color, 0, 12, y + 7, 22, 1.0f, 0);
 
-    char span[32], pos[16], dur[16];
+    char span[48], pos[16], dur[16];
     format_time(n->pos_ms, pos, sizeof pos);
     format_time(n->dur_ms, dur, sizeof dur);
     snprintf(span, sizeof span, "%s / %s", pos, dur);
