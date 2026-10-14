@@ -10,6 +10,7 @@ import sys
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
 PINS = {
     "custom-core": ("https://github.com/mcidclan/psp-media-engine-custom-core.git",
                     "fe871e12754060f3b42fbca6b251bb8ee3ade453", "custom-core-build.patch"),
@@ -87,6 +88,7 @@ def package(build):
     shutil.copy2(bridge_build / "kernel" / "kcall", debug / "kcall.elf")
     shutil.copy2(bridge_build / "kernel" / "kcall.prx", debug / "kcall.prx")
     shutil.copytree(ROOT / "licenses", game / "licenses", dirs_exist_ok=True)
+    shutil.copytree(ROOT / "themes", game / "THEMES", dirs_exist_ok=True)
     shutil.copy2(ROOT / "docs" / "SETUP.md", game / "SETUP.md")
     run(sys.executable, ROOT / "scripts" / "verify_artifacts.py", build, "--output", debug)
     run(sys.executable, ROOT / "scripts" / "verify_import_layout.py", build, "--output", debug)
@@ -122,6 +124,8 @@ def main():
     if not os.environ.get("PSPDEV"):
         raise RuntimeError("PSPDEV must name the installed toolchain")
     fetch_sources()
+    from ui_assets import psp_fonts  # needs fontTools; only the PSP build subsets
+    psp_fonts()
     prepare_dependencies(args.cmake, args.generator)
     build = ROOT / args.build_dir
     configure(args.cmake, ROOT, build, args.generator)

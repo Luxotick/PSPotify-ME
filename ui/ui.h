@@ -89,6 +89,7 @@ typedef struct ui_state {
     int volume;
     char clock[8];
     char search_query[128];
+    const char *search_hint;    /* shown while the query is empty */
 
     int cat;
     ui_event events[UI_MAX_EVENTS];

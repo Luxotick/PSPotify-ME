@@ -15,7 +15,10 @@ jobs:
       image: pspdev/pspdev:v20261001
     steps:
       - name: Install build host helpers
-        run: apk add --no-cache python3
+        # fontTools subsets the UI fonts (scripts/ui_assets.py).
+        run: |
+          apk add --no-cache python3 py3-pip
+          pip install --break-system-packages fonttools==4.55.0
       - name: Check out source
         uses: actions/checkout@v4
       - name: Build pinned dependencies, EBOOT and verify binaries

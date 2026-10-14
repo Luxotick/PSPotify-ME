@@ -233,7 +233,7 @@ static void draw_categories(const ui_state *ui)
     }
 }
 
-static void draw_cover(r_tex *tex, uint32_t color, int round, float x, float y, float size,
+static void draw_cover(r_tex *tex, uint32_t color, int circle, float x, float y, float size,
                        float alpha, int note)
 {
     if (tex) {
@@ -242,7 +242,7 @@ static void draw_cover(r_tex *tex, uint32_t color, int round, float x, float y, 
         r_tex_draw(tex, 0, 0, (float)w, (float)h, x, y, size, size, color_fade(0xFFFFFFFFu, alpha));
         return;
     }
-    draw_round_rect(x, y, size, size, round ? size / 2 : (size >= 40 ? 6 : 4), color_fade(color, alpha));
+    draw_round_rect(x, y, size, size, circle ? size / 2 : (size >= 40 ? 6 : 4), color_fade(color, alpha));
     if (note && size >= 30) {
         int icon = (int)(size * 0.4f);
         font_icon(ICON_MUSIC, icon, x + (size - icon) / 2, y + (size - icon) / 2,
@@ -337,14 +337,14 @@ static void draw_search(const ui_state *ui, float bottom, float alpha, float sli
         font_draw_fit(FONT_REGULAR, 12, x + 32, y + 5, color_fade(t->text, alpha), ui->search_query,
                       w - 110);
         char count[24];
-        snprintf(count, sizeof count, results->loading ? "Searching\xE2\x80\xA6" : "%d results",
-                 results->count);
+        if (results->loading) snprintf(count, sizeof count, "Searching\xE2\x80\xA6");
+        else snprintf(count, sizeof count, "%d results", results->count);
         float cw = font_width(FONT_REGULAR, 10, count);
         font_draw(FONT_REGULAR, 10, x + w - 12 - cw, y + 7, color_fade(t->dim, alpha), count);
         draw_levels(ui, UI_CAT_SEARCH, 30 + slide, y + 34, bottom, &STYLE_COMPACT, alpha, 0);
     } else {
         font_draw(FONT_REGULAR, 12, x + 32, y + 5, color_fade(t->dim, alpha),
-                  "Press \xE2\x96\xA1 to search Spotify");
+                  ui->search_hint ? ui->search_hint : "Press \xE2\x96\xA1 to search Spotify");
     }
 }
 
@@ -415,14 +415,14 @@ static void draw_mini(const ui_state *ui)
     draw_progress(ui, 0, y, SCREEN_W, 2, 1.0f);
     draw_cover(n->cover, n->color, 0, 12, y + 7, 22, 1.0f, 0);
 
-    char time[32], pos[16], dur[16];
+    char span[32], pos[16], dur[16];
     format_time(n->pos_ms, pos, sizeof pos);
     format_time(n->dur_ms, dur, sizeof dur);
-    snprintf(time, sizeof time, "%s / %s", pos, dur);
+    snprintf(span, sizeof span, "%s / %s", pos, dur);
     float right = SCREEN_W - 12 - 14;
     font_icon(n->paused ? ICON_PLAY : ICON_PAUSE, 14, right, y + 11, t->text);
-    right -= 10 + font_width(FONT_REGULAR, 10, time);
-    font_draw(FONT_REGULAR, 10, right, y + 10, t->dim, n->loading ? "" : time);
+    right -= 10 + font_width(FONT_REGULAR, 10, span);
+    font_draw(FONT_REGULAR, 10, right, y + 10, t->dim, n->loading ? "" : span);
 
     float x = 42;
     float tw = font_draw_fit(FONT_BOLD, 12, x, y + 9, t->text, n->title, right - x - 80);

@@ -32,11 +32,18 @@ static int hex_to_bytes(const char *hex, uint8_t *out, size_t max_out)
 /* <app dir>/spotify.cfg: absolute, because the sceIoChdir directory is not
  * seen by other threads (the player thread reloads and saves the config). */
 static char app_cfg_path[300];
+static char app_dir[256];
 
 void spotify_config_set_dir(const char *dir)
 {
+    snprintf(app_dir, sizeof app_dir, "%s", dir);
     int n = snprintf(app_cfg_path, sizeof app_cfg_path, "%s/spotify.cfg", dir);
     if (n < 0 || (size_t)n >= sizeof app_cfg_path) app_cfg_path[0] = '\0';
+}
+
+const char *spotify_config_dir(void)
+{
+    return app_dir;
 }
 
 int spotify_config_load(spotify_config *cfg)

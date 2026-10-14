@@ -6,62 +6,23 @@ can be iterated on without copying an EBOOT to the console every time.
 """
 from pathlib import Path
 import argparse
-import hashlib
 import io
 import os
 import shutil
 import subprocess
 import sys
-import tarfile
-import urllib.request
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build import ROOT, fetch_sources  # noqa: E402
+from ui_assets import download, fetch as fetch_fonts  # noqa: E402
 
 DEPS = ROOT / ".deps"
-FONTS = DEPS / "fonts"
 OUT = ROOT / "build-preview"
 
-GOOGLE_FONTS = ("https://raw.githubusercontent.com/google/fonts/"
-                "84efd8ad78c3710ad14bd909e3bc407151885628/ofl/mplusrounded1c/")
-DOWNLOADS = {
-    "MPLUSRounded1c-Regular.ttf": (GOOGLE_FONTS + "MPLUSRounded1c-Regular.ttf",
-        "b75708b53e45b06d17d470aeeca5b766e3d1b3999f03f13ec4eb863ca846c14c"),
-    "MPLUSRounded1c-Bold.ttf": (GOOGLE_FONTS + "MPLUSRounded1c-Bold.ttf",
-        "c358630584e8e2d8fbd6121d0f4693255ffef6d1e6d4f3441fd6e5a963a11f9e"),
-    "MPLUSRounded1c-ExtraBold.ttf": (GOOGLE_FONTS + "MPLUSRounded1c-ExtraBold.ttf",
-        "8e7c15901dca87f1451b356dda594f7d092ba252a5dcc47da74523a242493c36"),
-}
-LUCIDE = ("https://registry.npmjs.org/lucide-static/-/lucide-static-1.48.0.tgz",
-          "3c2ecda3d25f6a9692d83f8036d9a526f7da584a51af74cd16eda4498c5c33d8")
 SDL2_VC = ("https://github.com/libsdl-org/SDL/releases/download/release-2.32.8/"
            "SDL2-devel-2.32.8-VC.zip",
            "a16e5f0e5de87a804e3c240a7d92aca0318fda176b22d95550c6512fc4f18172")
-
-
-def download(url, sha256):
-    with urllib.request.urlopen(url, timeout=120) as response:
-        data = response.read()
-    digest = hashlib.sha256(data).hexdigest()
-    if digest != sha256:
-        raise RuntimeError(f"{url}: sha256 {digest} does not match the pin {sha256}")
-    return data
-
-
-def fetch_assets():
-    FONTS.mkdir(parents=True, exist_ok=True)
-    for name, (url, sha256) in DOWNLOADS.items():
-        target = FONTS / name
-        if not target.exists():
-            print(f"fetching {name}")
-            target.write_bytes(download(url, sha256))
-    icons = FONTS / "lucide.ttf"
-    if not icons.exists():
-        print("fetching lucide icons")
-        with tarfile.open(fileobj=io.BytesIO(download(*LUCIDE)), mode="r:gz") as tar:
-            icons.write_bytes(tar.extractfile("package/font/lucide.ttf").read())
-            (FONTS / "lucide-LICENSE").write_bytes(tar.extractfile("package/LICENSE").read())
 
 
 def fetch_sdl2_windows():
@@ -86,7 +47,8 @@ def vcvars():
 
 
 SOURCES = ["tools/preview/main.c", "tools/preview/render_sdl.c",
-           "ui/xmb.c", "ui/font.c", "ui/theme.c", "ui/draw.c", "ui/palette.c"]
+           "ui/xmb.c", "ui/font.c", "ui/theme.c", "ui/draw.c", "ui/palette.c",
+           "ui/stb_truetype_impl.c"]
 
 
 def build_windows():
@@ -121,7 +83,7 @@ def main():
     parser.add_argument("--fetch-only", action="store_true")
     args = parser.parse_args()
     fetch_sources()
-    fetch_assets()
+    fetch_fonts()
     if args.fetch_only:
         return
     if sys.platform == "win32":

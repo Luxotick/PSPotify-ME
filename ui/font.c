@@ -5,8 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define STB_TRUETYPE_IMPLEMENTATION
-#define STBTT_STATIC
 #include "stb_truetype.h"
 
 /* Glyph slots in a text atlas: ASCII, then U+00A0-U+017F, then extras. */
@@ -97,7 +95,8 @@ static int bake(atlas *a)
             stbtt_PackEnd(&pc);
         }
         if (ok) {
-            a->tex = r_tex_create_alpha(w, h, pixels, 0);
+            /* Icons are drawn scaled between baked sizes, so filter them. */
+            a->tex = r_tex_create_alpha(w, h, pixels, a->face == FONT_ICONS);
             a->w = w;
             a->h = h;
             free(pixels);
@@ -229,17 +228,27 @@ float font_line_height(font_face face, int size)
 
 void font_icon(unsigned codepoint, int size, float x, float y, uint32_t color)
 {
-    atlas *a = get_atlas(FONT_ICONS, size);
+    /* Icons are baked at a few sizes and scaled in between, so animated
+     * sizes (the category row) do not each need an atlas. */
+    static const int baked[] = { 12, 16, 24, 36 };
+    int bake_size = baked[3];
+    for (int i = 0; i < 4; ++i)
+        if (size <= baked[i]) {
+            bake_size = baked[i];
+            break;
+        }
+    atlas *a = get_atlas(FONT_ICONS, bake_size);
     if (!a) return;
     int slot = -1;
     for (int i = 0; i < ICON_SLOTS; ++i)
         if ((unsigned)icon_codepoints[i] == codepoint) slot = i;
     if (slot < 0) return;
     /* Lucide glyphs fill the em square, which sits on the baseline. */
-    float pen = floorf(x + 0.5f), baseline = floorf(y + 0.5f) + (float)size;
+    float pen = 0, baseline = (float)bake_size, k = (float)size / (float)bake_size;
     stbtt_aligned_quad q;
-    stbtt_GetPackedQuad(a->chars, a->w, a->h, slot, &pen, &baseline, &q, 1);
+    stbtt_GetPackedQuad(a->chars, a->w, a->h, slot, &pen, &baseline, &q, 0);
     if (q.x1 > q.x0)
         r_tex_draw(a->tex, q.s0 * a->w, q.t0 * a->h, (q.s1 - q.s0) * a->w, (q.t1 - q.t0) * a->h,
-                   q.x0, q.y0, q.x1 - q.x0, q.y1 - q.y0, color);
+                   floorf(x + 0.5f) + q.x0 * k, floorf(y + 0.5f) + q.y0 * k,
+                   (q.x1 - q.x0) * k, (q.y1 - q.y0) * k, color);
 }
