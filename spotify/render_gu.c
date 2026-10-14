@@ -16,8 +16,9 @@
 #define SCR_H 272
 #define FB_SIZE (BUF_W * SCR_H * 4)
 
-/* One frame's commands and vertices: ~100 bytes per glyph or rectangle. */
-static unsigned int __attribute__((aligned(64))) gu_list[192 * 1024];
+/* One frame's commands and vertices: ~70 bytes per glyph or rectangle, so
+ * 256 KB covers several thousand per frame. */
+static unsigned int __attribute__((aligned(64))) gu_list[64 * 1024];
 /* 8-bit textures are coverage: entry i is white with alpha i (ABGR). */
 static uint32_t __attribute__((aligned(16))) alpha_clut[256];
 
