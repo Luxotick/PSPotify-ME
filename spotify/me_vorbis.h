@@ -12,6 +12,7 @@
  * the ME only: `first` makes the ME drop stale cache lines for it once. */
 
 #define ME_VORBIS_MAX_FRAMES 4096u
+#define ME_EQ_BANDS 5
 
 #define ME_VORBIS_READY   1u
 #define ME_VORBIS_RUNNING 2u
@@ -29,6 +30,15 @@ typedef struct __attribute__((aligned(64))) MeVorbisJob {
     int16_t *pcm;                   /* 64-byte aligned output */
     uint32_t pcm_frames_cap;
     volatile int32_t used, frames, channels;
+    /* Reset the decoder before this window: the input jumped (a seek). */
+    uint32_t flush;
+    /* Equalizer, applied on the ME while converting to s16. The SC writes
+     * the coefficients (b0 b1 b2 a1 a2, normalised) between jobs; the filter
+     * memory belongs to the ME and survives from job to job. */
+    uint32_t eq_on;
+    float eq_preamp;
+    float eq_coef[ME_EQ_BANDS][5];
+    float eq_state[2][ME_EQ_BANDS][2];
 } MeVorbisJob;
 
 /* ME entry point (Task.func); never called on the SC. */

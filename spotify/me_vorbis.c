@@ -42,16 +42,41 @@ static void decode_job(void *param)
         meCoreDcacheInvalidateRange(job->decoder_memory, job->decoder_memory_size);
     meCoreDcacheInvalidateRange(LINE_DOWN(job->data), LINE_SPAN(job->data, job->data_len));
 
+    if (job->flush) stb_vorbis_flush_pushdata((stb_vorbis *)job->decoder);
+
     int channels = 0, samples = 0;
     float **out = 0;
     int used = stb_vorbis_decode_frame_pushdata((stb_vorbis *)job->decoder, job->data,
                                                 job->data_len, &channels, &out, &samples);
     if (samples > (int)job->pcm_frames_cap) samples = (int)job->pcm_frames_cap;
     int16_t *pcm = job->pcm;
-    for (int i = 0; i < samples; ++i) {
-        int16_t l = to_s16(out[0][i]);
-        pcm[i * 2] = l;
-        pcm[i * 2 + 1] = channels > 1 ? to_s16(out[1][i]) : l;
+    if (job->eq_on && samples > 0) {
+        /* Cascaded biquads (transposed direct form II), one chain per
+         * channel; mono is filtered once and copied. */
+        const int chains = channels > 1 ? 2 : 1;
+        for (int c = 0; c < chains; ++c) {
+            const float *in = out[c];
+            for (int i = 0; i < samples; ++i) {
+                float x = in[i] * job->eq_preamp;
+                for (int b = 0; b < ME_EQ_BANDS; ++b) {
+                    const float *k = job->eq_coef[b];
+                    float *z = job->eq_state[c][b];
+                    float y = k[0] * x + z[0];
+                    z[0] = k[1] * x - k[3] * y + z[1];
+                    z[1] = k[2] * x - k[4] * y;
+                    x = y;
+                }
+                int16_t v = to_s16(x);
+                pcm[i * 2 + c] = v;
+                if (chains == 1) pcm[i * 2 + 1] = v;
+            }
+        }
+    } else {
+        for (int i = 0; i < samples; ++i) {
+            int16_t l = to_s16(out[0][i]);
+            pcm[i * 2] = l;
+            pcm[i * 2 + 1] = channels > 1 ? to_s16(out[1][i]) : l;
+        }
     }
     if (samples > 0) meCoreDcacheWritebackRange(pcm, LINE_SPAN(pcm, samples * 4));
 

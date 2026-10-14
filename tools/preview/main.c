@@ -423,6 +423,12 @@ static int handle(ui_state *ui, const ui_event *e)
     case UI_EV_SEARCH:
         run_search(ui);
         break;
+    case UI_EV_SHUFFLE:
+        ui->now.shuffle = !ui->now.shuffle;
+        break;
+    case UI_EV_REPEAT:
+        ui->now.repeat = (ui->now.repeat + 1) % 3;
+        break;
     default:
         break;
     }

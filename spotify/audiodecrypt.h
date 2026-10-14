@@ -18,6 +18,8 @@ typedef struct {
 
 /* Starts decryption at byte offset 0 of the file. */
 void audio_decrypt_init(audio_decrypt *d, const uint8_t key[16]);
+/* Continues decryption at byte offset `offset` of the file (a seek). */
+void audio_decrypt_seek(audio_decrypt *d, uint64_t offset);
 /* Decrypts the next len bytes of the file in place. */
 void audio_decrypt_run(audio_decrypt *d, uint8_t *buf, size_t len);
 

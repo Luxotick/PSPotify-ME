@@ -5,6 +5,8 @@
 #include "memory.h"
 #include "me_vorbis.h"
 #include "../common.h"
+#include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <malloc.h>
 #include <string.h>
@@ -34,6 +36,25 @@
  * 12.5 MB file found no 12.5 MB block in a fragmented heap). */
 static const size_t ring_sizes[] = { 3u << 20, 3u << 19, 3u << 18 };
 #define FETCH_MIN_ROOM 4096
+/* Data needed after a seek target before decoding resumes there. */
+#define SEEK_LOOKAHEAD (64u * 1024u)
+
+/* ---- equalizer ---- */
+
+const char *const player_eq_names[PLAYER_EQ_PRESETS] = {
+    "Off", "Bass boost", "Treble boost", "Vocal", "Rock", "Pop", "Loudness",
+};
+/* Band gains in dB at 60, 230, 910, 3600 and 14000 Hz. */
+static const float eq_gains[PLAYER_EQ_PRESETS][ME_EQ_BANDS] = {
+    { 0, 0, 0, 0, 0 },
+    { 6, 3, 0, 0, 0 },
+    { 0, 0, 0, 3, 6 },
+    { -2, -1, 3, 3, 0 },
+    { 4, 2, -1, 2, 4 },
+    { -1, 2, 4, 2, -1 },
+    { 5, 2, 0, 1, 4 },
+};
+static const float eq_freqs[ME_EQ_BANDS] = { 60, 230, 910, 3600, 14000 };
 
 /* Each slot is played by audio DMA after OutputBlocking returns, so the next
  * block is written into a different slot (one shared buffer crackled). */
@@ -54,6 +75,7 @@ typedef struct {
     int wraps;
     volatile size_t buffered;   /* decrypted bytes received (absolute) */
     volatile size_t consumed;   /* bytes the decoder is done with (absolute) */
+    size_t valid_lo;            /* first byte downloaded since the last (re)start */
     volatile int open;          /* fetch thread still running */
     volatile int stop;
 } fetcher;
@@ -131,6 +153,36 @@ static MeVorbisJob me_job;
 static Task me_task;
 static int16_t me_pcm[2][ME_VORBIS_MAX_FRAMES * 2] __attribute__((aligned(64)));
 static uint32_t me_sequence;
+static uint32_t me_pending_flush;
+
+/* Peaking filters (RBJ cookbook), computed on the SC; the ME only runs them.
+ * Called between jobs, when the ME is idle. */
+static void eq_configure(int preset, unsigned int rate)
+{
+    if (preset <= 0 || preset >= PLAYER_EQ_PRESETS || rate == 0) {
+        me_job.eq_on = 0;
+        return;
+    }
+    float boost = 0;
+    for (int b = 0; b < ME_EQ_BANDS; ++b) {
+        const float gain = eq_gains[preset][b];
+        if (gain > boost) boost = gain;
+        const float a = powf(10.0f, gain / 40.0f);
+        const float w0 = 2.0f * 3.14159265f * eq_freqs[b] / (float)rate;
+        const float alpha = sinf(w0) / (2.0f * 1.1f);
+        const float cw = cosf(w0);
+        const float a0 = 1.0f + alpha / a;
+        me_job.eq_coef[b][0] = (1.0f + alpha * a) / a0;
+        me_job.eq_coef[b][1] = -2.0f * cw / a0;
+        me_job.eq_coef[b][2] = (1.0f - alpha * a) / a0;
+        me_job.eq_coef[b][3] = -2.0f * cw / a0;
+        me_job.eq_coef[b][4] = (1.0f - alpha / a) / a0;
+    }
+    /* Leave headroom for the boost so loud passages do not clip. */
+    me_job.eq_preamp = powf(10.0f, -boost / 20.0f);
+    memset(me_job.eq_state, 0, sizeof me_job.eq_state);
+    me_job.eq_on = 1;
+}
 
 static int me_dispatch(stb_vorbis *v, const uint8_t *data, size_t len, int first,
                        int16_t *pcm)
@@ -148,6 +200,8 @@ static int me_dispatch(stb_vorbis *v, const uint8_t *data, size_t len, int first
     me_job.pcm = pcm;
     me_job.pcm_frames_cap = ME_VORBIS_MAX_FRAMES;
     me_job.used = me_job.frames = me_job.channels = 0;
+    me_job.flush = me_pending_flush;
+    me_pending_flush = 0;
     if (++me_sequence == 0) ++me_sequence;
     me_job.sequence = me_sequence;
     me_job.completed_sequence = 0;
@@ -191,6 +245,78 @@ static void report(const fetcher *f, const ring_state *ring, unsigned int rate,
                (unsigned int)(f->buffered / 1024), (unsigned int)(f->capacity / 1024), waits,
                (unsigned int)((sceKernelGetSystemTimeWide() - started) / 1000),
                (unsigned int)(me_wait_us / 1000));
+}
+
+static uint8_t ring_byte(const fetcher *f, size_t p)
+{
+    return f->buf[p % f->ring];
+}
+
+/* First Ogg page header at or after `from`, before `limit`; SIZE_MAX if none. */
+static size_t find_page(const fetcher *f, size_t from, size_t limit)
+{
+    for (size_t p = from; p + 27 <= limit; ++p)
+        if (ring_byte(f, p) == 'O' && ring_byte(f, p + 1) == 'g' && ring_byte(f, p + 2) == 'g' &&
+            ring_byte(f, p + 3) == 'S' && ring_byte(f, p + 4) == 0)
+            return p;
+    return SIZE_MAX;
+}
+
+/* A page's granule position: the sample count at its end. */
+static uint64_t page_granule(const fetcher *f, size_t page)
+{
+    uint64_t g = 0;
+    for (int i = 7; i >= 0; --i) g = (g << 8) | ring_byte(f, page + 6 + (size_t)i);
+    return g;
+}
+
+static void fetch_stop(fetcher *f, SceUID thid)
+{
+    f->stop = 1;
+    SceUInt timeout = 20u * 1000u * 1000u;
+    if (sceKernelWaitThreadEnd(thid, &timeout) < 0) sceKernelTerminateThread(thid);
+    sceKernelDeleteThread(thid);
+    http_stream_close(&f->http);
+}
+
+static SceUID fetch_start(fetcher **fp)
+{
+    /* Below the UI thread (0x20): the download runs well ahead of playback,
+     * and at a higher priority its TLS and AES work made the UI stutter. */
+    SceUID thid = sceKernelCreateThread("ogg_fetch", fetch_thread, 0x24, 0x10000, 0, NULL);
+    if (thid < 0 || sceKernelStartThread(thid, sizeof *fp, fp) < 0) {
+        log_printf("PLAYER: fetch thread failed 0x%08X\n", (unsigned int)thid);
+        if (thid >= 0) sceKernelDeleteThread(thid);
+        return -1;
+    }
+    return thid;
+}
+
+/* Restarts the download at file offset `at` with an HTTP range request. */
+static SceUID fetch_restart(fetcher *f, fetcher **fp, SceUID thid, const char *urls,
+                            unsigned int url_stride, int url_count, size_t at)
+{
+    fetch_stop(f, thid);
+    char range[48];
+    snprintf(range, sizeof range, "Range: bytes=%u-\r\n", (unsigned int)at);
+    int status = -1;
+    for (int u = 0; u < url_count && status != 206; ++u) {
+        uint64_t length = 0;
+        status = http_stream_open_ex(&f->http, "GET", urls + (size_t)u * url_stride, range,
+                                     NULL, 0, &length);
+        if (status > 0 && status != 206) http_stream_close(&f->http);
+    }
+    if (status != 206) {
+        log_printf("PLAYER: range request failed (HTTP %d)\n", status);
+        return -1;
+    }
+    audio_decrypt_seek(&f->decrypt, at);
+    f->buffered = at;
+    f->consumed = at;
+    f->valid_lo = at;
+    f->stop = 0;
+    f->open = 1;
+    return fetch_start(fp);
 }
 
 int spotify_play_ogg(const char *urls, unsigned int url_stride, int url_count,
@@ -259,12 +385,8 @@ int spotify_play_ogg(const char *urls, unsigned int url_stride, int url_count,
      * starved at 0x30 (255 KB in the first 10 s, 44 decoder waits). It sleeps
      * in recv most of the time, so a higher priority costs nothing. */
     memory_log("pre-fetch-thread");
-    /* Below the UI thread (0x20): the download runs well ahead of playback,
-     * and at a higher priority its TLS and AES work made the UI stutter. */
-    SceUID thid = sceKernelCreateThread("ogg_fetch", fetch_thread, 0x24, 0x10000, 0, NULL);
-    if (thid < 0 || sceKernelStartThread(thid, sizeof fp, &fp) < 0) {
-        log_printf("PLAYER: fetch thread failed 0x%08X\n", (unsigned int)thid);
-        if (thid >= 0) sceKernelDeleteThread(thid);
+    SceUID thid = fetch_start(&fp);
+    if (thid < 0) {
         http_stream_close(&f.http);
         free(f.buf);
         memory_log("track-cleanup");
@@ -275,8 +397,9 @@ int spotify_play_ogg(const char *urls, unsigned int url_stride, int url_count,
     int me_used = 0;
     stb_vorbis *v = NULL;
     stb_vorbis_alloc alloc = { vorbis_memory, (int)sizeof vorbis_memory };
-    size_t pos = SPOTIFY_OGG_HEADER;
+    size_t pos = SPOTIFY_OGG_HEADER, audio_start = SPOTIFY_OGG_HEADER;
     f.consumed = pos;
+    int eq_applied = -1;
     int channel = -1;
     unsigned int waits = 0;
     ring_state ring = { 0, 0, 0 };
@@ -293,7 +416,7 @@ int spotify_play_ogg(const char *urls, unsigned int url_stride, int url_count,
             size_t avail = have - pos;
             if (f.wraps && avail > ME_WINDOW_MAX) avail = ME_WINDOW_MAX;
             v = stb_vorbis_open_pushdata(f.buf + pos, (int)avail, &used, &error, &alloc);
-            if (v) { pos += (size_t)used; f.consumed = pos; break; }
+            if (v) { pos += (size_t)used; f.consumed = pos; audio_start = pos; break; }
             if (error != VORBIS_need_more_data) {
                 log_printf("PLAYER: Vorbis open error %d\n", error);
                 ret = -4;
@@ -332,6 +455,49 @@ int spotify_play_ogg(const char *urls, unsigned int url_stride, int url_count,
         size_t window = ME_WINDOW_MIN;
         for (;;) {
             if (control->stop) { ret = PLAYER_STOPPED; break; }
+            if (control->eq_preset != eq_applied) {
+                eq_applied = control->eq_preset;
+                eq_configure(eq_applied, info.sample_rate);
+            }
+            if (control->seek_ms >= 0) {
+                const unsigned int target = (unsigned int)control->seek_ms;
+                control->seek_ms = -1;
+                if (control->duration_ms > 0 && f.capacity > audio_start + 1) {
+                    /* Aim by bitrate, then land on the next Ogg page. */
+                    const size_t span = f.capacity - audio_start;
+                    size_t at = audio_start +
+                                (size_t)((uint64_t)span * target / control->duration_ms);
+                    if (at >= f.capacity) at = f.capacity - 1;
+                    size_t lo = f.valid_lo;
+                    if (f.wraps && f.buffered > f.ring + ME_WINDOW_MAX &&
+                        f.buffered - f.ring + ME_WINDOW_MAX > lo)
+                        lo = f.buffered - f.ring + ME_WINDOW_MAX;
+                    const int in_buffer = at >= lo &&
+                        (at + SEEK_LOOKAHEAD <= f.buffered || (!f.open && at < f.buffered));
+                    if (!in_buffer) {
+                        thid = fetch_restart(&f, &fp, thid, urls, url_stride, url_count, at);
+                        if (thid < 0) { ret = -7; goto out; }
+                    }
+                    for (int tries = 0; tries < 1000 && f.open && !control->stop &&
+                                        f.buffered < at + SEEK_LOOKAHEAD; ++tries)
+                        sceKernelDelayThread(10000);
+                    size_t page = find_page(&f, at, f.buffered);
+                    if (page != SIZE_MAX) {
+                        pos = page;
+                        f.consumed = pos;
+                        prev_frames = 0;
+                        window = ME_WINDOW_MIN;
+                        me_pending_flush = 1;
+                        uint64_t granule = page_granule(&f, page);
+                        ring.frames = granule != UINT64_MAX ? granule
+                                    : (unsigned long long)target * info.sample_rate / 1000u;
+                        control->position_ms = (unsigned int)(ring.frames * 1000ull / info.sample_rate);
+                        next_report = ring.frames + 10ull * info.sample_rate;
+                        log_printf("PLAYER: seek to %u s (%s)\n", control->position_ms / 1000u,
+                                   in_buffer ? "buffered" : "range request");
+                    }
+                }
+            }
             if (control->paused) { sceKernelDelayThread(20000); continue; }
             size_t have = f.buffered;
             control->fetched_pct = (unsigned int)((uint64_t)have * 100u / f.capacity);
@@ -405,11 +571,8 @@ out:
     /* With caller-provided memory close() frees nothing; skip it once the ME
      * owns the decoder state so the SC never touches it again. */
     if (v && !me_used) stb_vorbis_close(v);
-    f.stop = 1;
-    SceUInt timeout = 20u * 1000u * 1000u;
-    if (sceKernelWaitThreadEnd(thid, &timeout) < 0) sceKernelTerminateThread(thid);
-    sceKernelDeleteThread(thid);
-    http_stream_close(&f.http);
+    if (thid >= 0) fetch_stop(&f, thid);
+    else http_stream_close(&f.http);
     free(f.buf);
     memory_log("track-cleanup");
     return ret;

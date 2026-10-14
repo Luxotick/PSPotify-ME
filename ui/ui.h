@@ -10,6 +10,7 @@
 
 enum {
     UI_CAT_SEARCH,
+    UI_CAT_RECENT,
     UI_CAT_LIKED,
     UI_CAT_PLAYLISTS,
     UI_CAT_NOW,
@@ -50,6 +51,10 @@ typedef struct ui_list {
 
 typedef struct ui_now {
     int active, paused, loading;
+    int shuffle;        /* 1: queue plays in random order */
+    int repeat;         /* 0 off, 1 the whole queue, 2 this track */
+    int seeking;        /* pos_ms is a seek preview while L/R is held */
+    int remote;         /* controlled from another device (Spotify Connect) */
     char title[128], artist[128], album[128], next[128];
     unsigned pos_ms, dur_ms;
     uint32_t color;
@@ -62,10 +67,12 @@ typedef enum {
     UI_EV_PAUSE,
     UI_EV_PREV,
     UI_EV_NEXT,
-    UI_EV_SEEK,         /* value: -1 or +1, repeated while L/R is held */
+    UI_EV_SEEK,         /* value: -1 or +1 while L/R is held; 0 when released */
     UI_EV_VOLUME,       /* value: new volume 0-100 */
     UI_EV_SEARCH,       /* □ in Search: open the keyboard */
     UI_EV_OPTIONS,      /* category, level, index: △ */
+    UI_EV_SHUFFLE,      /* △ on Now Playing */
+    UI_EV_REPEAT,       /* ✕ on Now Playing */
     UI_EV_QUIT
 } ui_event_type;
 

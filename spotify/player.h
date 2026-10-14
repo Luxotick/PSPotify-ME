@@ -19,7 +19,16 @@ typedef struct {
     volatile int volume;            /* 0 .. PSP_AUDIO_VOLUME_MAX */
     volatile unsigned int position_ms;
     volatile unsigned int fetched_pct;
+    /* >= 0: jump to this time; the player sets it back to -1. */
+    volatile int seek_ms;
+    /* Set by the caller from the metadata; aims seeks within the file. */
+    volatile unsigned int duration_ms;
+    /* Equalizer preset, an index into player_eq_names (0 = off). */
+    volatile int eq_preset;
 } player_control;
+
+#define PLAYER_EQ_PRESETS 7
+extern const char *const player_eq_names[PLAYER_EQ_PRESETS];
 
 /* Streams one Spotify Ogg Vorbis file: downloads from the first working CDN
  * URL on a background thread, AES-CTR decrypts as it arrives, skips the

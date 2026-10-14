@@ -18,11 +18,16 @@
 #define ICON_SQUARE         0xe167u
 #define ICON_USER           0xe19fu
 #define ICON_LOADER         0xe10au
+#define ICON_SHUFFLE        0xe15eu
+#define ICON_REPEAT         0xe146u
+#define ICON_REPEAT_ONE     0xe1fdu
+#define ICON_HISTORY        0xe1f5u
+#define ICON_CAST           0xe066u
 
 /* Every icon the UI bakes; keep in sync with the defines above. */
 #define ICON_LIST ICON_SEARCH, ICON_HEART, ICON_LIST_MUSIC, ICON_MUSIC, ICON_SLIDERS, \
     ICON_PLAY, ICON_PAUSE, ICON_SKIP_BACK, ICON_SKIP_FORWARD, ICON_VOLUME,           \
     ICON_VOLUME_MUTE, ICON_CROSS, ICON_CIRCLE, ICON_TRIANGLE, ICON_SQUARE, ICON_USER, \
-    ICON_LOADER
+    ICON_LOADER, ICON_SHUFFLE, ICON_REPEAT, ICON_REPEAT_ONE, ICON_HISTORY, ICON_CAST
 
 #endif

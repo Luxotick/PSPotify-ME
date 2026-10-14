@@ -17,10 +17,10 @@
 #define SEEK_HOLD 0.45f     /* L/R held longer than this seeks */
 
 static const char *const cat_names[UI_CATS] = {
-    "Search", "Liked Songs", "Playlists", "Now Playing", "Settings"
+    "Search", "Recent", "Liked Songs", "Playlists", "Now Playing", "Settings"
 };
 static const unsigned cat_icons[UI_CATS] = {
-    ICON_SEARCH, ICON_HEART, ICON_LIST_MUSIC, ICON_MUSIC, ICON_SLIDERS
+    ICON_SEARCH, ICON_HISTORY, ICON_HEART, ICON_LIST_MUSIC, ICON_MUSIC, ICON_SLIDERS
 };
 
 static float clampf(float v, float lo, float hi)
@@ -125,12 +125,14 @@ void ui_update(ui_state *ui, unsigned buttons, float dt)
         if (*sel < 0) *sel = 0;
     }
     if ((pressed & UI_BTN_CROSS) && cat != UI_CAT_NOW && list->count > 0) emit(ui, UI_EV_OPEN, 0);
+    if ((pressed & UI_BTN_CROSS) && cat == UI_CAT_NOW) emit(ui, UI_EV_REPEAT, 0);
     if ((pressed & UI_BTN_CIRCLE) && lvl > 0) {
         emit(ui, UI_EV_BACK, 0);
         ui->level[cat] = 0;
     }
     if (pressed & UI_BTN_SQUARE) emit(ui, cat == UI_CAT_SEARCH ? UI_EV_SEARCH : UI_EV_PAUSE, 0);
-    if (pressed & UI_BTN_TRIANGLE) emit(ui, UI_EV_OPTIONS, 0);
+    if (pressed & UI_BTN_TRIANGLE)
+        emit(ui, cat == UI_CAT_NOW ? UI_EV_SHUFFLE : UI_EV_OPTIONS, 0);
     if (pressed & UI_BTN_START) emit(ui, UI_EV_QUIT, 0);
 
     /* L/R: a tap changes track, holding seeks. */
@@ -146,6 +148,8 @@ void ui_update(ui_state *ui, unsigned buttons, float dt)
     }
     if ((released & (UI_BTN_L | UI_BTN_R)) && ui->lr_held < SEEK_HOLD)
         emit(ui, (released & UI_BTN_R) ? UI_EV_NEXT : UI_EV_PREV, 0);
+    else if (released & (UI_BTN_L | UI_BTN_R))
+        emit(ui, UI_EV_SEEK, 0);    /* end of a seek: jump to the previewed time */
 
     if ((act & UI_BTN_LEFT) && ui->cat > 0) --ui->cat;
     if ((act & UI_BTN_RIGHT) && ui->cat < UI_CATS - 1) ++ui->cat;
@@ -189,8 +193,13 @@ static void draw_top(const ui_state *ui)
         break;
     case UI_CAT_NOW:
         hint(&x, ICON_SQUARE, ui->now.paused ? "Play" : "Pause", t->dim);
-        x += font_draw(FONT_REGULAR, 10, x, 3, t->dim, "L / R  Prev / Next") + 10;
-        x += font_draw(FONT_REGULAR, 10, x, 3, t->dim, "\xE2\x86\x91\xE2\x86\x93  Volume") + 10;
+        hint(&x, ICON_CROSS, "Repeat", t->dim);
+        hint(&x, ICON_TRIANGLE, "Shuffle", t->dim);
+        x += font_draw(FONT_REGULAR, 10, x, 3, t->dim, "\xE2\x86\x91\xE2\x86\x93 Vol") + 10;
+        break;
+    case UI_CAT_RECENT:
+        hint(&x, ICON_CROSS, lvl == 0 ? "Open" : "Play", t->dim);
+        if (lvl > 0) hint(&x, ICON_CIRCLE, "Back", t->dim);
         break;
     case UI_CAT_SETTINGS:
         hint(&x, ICON_CROSS, "Select", t->dim);
@@ -383,7 +392,8 @@ static void draw_now(const ui_state *ui, float alpha, float slide)
     draw_round_rect(x, bar_y, w, 4, 2, color_fade(color_mix(t->bg, t->dim, 0.25f), alpha));
     float f = n->dur_ms ? clampf((float)n->pos_ms / (float)n->dur_ms, 0, 1) : 0;
     draw_round_rect(x, bar_y, w * f, 4, 2, color_fade(t->accent, alpha));
-    draw_round_rect(x + w * f - 5, bar_y - 3, 10, 10, 5, color_fade(t->text, alpha));
+    draw_round_rect(x + w * f - 5, bar_y - 3, 10, 10, 5,
+                    color_fade(n->seeking ? t->accent : t->text, alpha));
     char pos[16], dur[16];
     format_time(n->pos_ms, pos, sizeof pos);
     format_time(n->dur_ms, dur, sizeof dur);
@@ -396,10 +406,17 @@ static void draw_now(const ui_state *ui, float alpha, float slide)
     draw_round_rect(x + 38, cy2 - 19, 38, 38, 19, color_fade(t->accent, alpha));
     font_icon(n->paused ? ICON_PLAY : ICON_PAUSE, 16, x + 49, cy2 - 8, color_fade(t->bg, alpha));
     font_icon(ICON_SKIP_FORWARD, 20, x + 94, cy2 - 10, color_fade(t->text, alpha));
+    /* Shuffle and repeat, lit in the accent color when on. */
+    font_icon(ICON_SHUFFLE, 16, x + 126, cy2 - 8,
+              color_fade(n->shuffle ? t->accent : t->dim, alpha));
+    font_icon(n->repeat == 2 ? ICON_REPEAT_ONE : ICON_REPEAT, 16, x + 150, cy2 - 8,
+              color_fade(n->repeat ? t->accent : t->dim, alpha));
+    if (n->remote)
+        font_icon(ICON_CAST, 14, x + w - 14, cy - 2, color_fade(t->accent, alpha));
     if (n->next[0]) {
         char next[160];
         snprintf(next, sizeof next, "Next: %s", n->next);
-        float max_w = x + w - (x + 126);
+        float max_w = x + w - (x + 176);
         float nw = font_width(FONT_REGULAR, 10, next);
         if (nw > max_w) nw = max_w;
         font_draw_fit(FONT_REGULAR, 10, x + w - nw, cy2 - 6, color_fade(t->dim, alpha), next, max_w);

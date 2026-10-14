@@ -85,6 +85,14 @@ static volatile play_state_t play_state = PS_IDLE;
 static volatile int player_quit;
 static volatile int me_dead;
 static volatile int last_error;    /* why the last track could not play */
+
+/* Play order over the queue: identity, or a shuffle that starts with the
+ * track the user picked. Repeat: 0 off, 1 the queue, 2 the current track. */
+static int order[MAX_TRACKS];
+static int shuffle_on, repeat_mode;
+static unsigned int rng_state = 0x9E3779B9u;
+/* While L/R is held: the time the seek will jump to, shown on screen. */
+static int seek_preview_ms = -1, seek_steps;
 /* Set after a system dialog held the UI loop, so frame stats skip that gap. */
 static int skip_frame_timing;
 
@@ -107,7 +115,10 @@ static char cover_tex_id[24];
 static char theme_names[MAX_THEMES][32];
 static uint32_t theme_swatch[MAX_THEMES];   /* accent, shown in Settings */
 static int theme_count, theme_active = -1;
-static ui_row settings_rows[MAX_THEMES + 1];
+/* Settings: Cover colors, Equalizer, then one row per theme. */
+#define SETTINGS_FIXED 2
+static ui_row settings_rows[MAX_THEMES + SETTINGS_FIXED];
+static int eq_preset;
 static ui_theme base_theme;
 static int cover_colors_on = 1;
 static int have_palette;
@@ -264,8 +275,13 @@ static void fill_settings(void)
              ? "On \xC2\xB7 the theme follows the album art"
              : "Off \xC2\xB7 the theme keeps its own colors");
     r->color = cover_colors_on ? xmb.theme_target.accent : 0xFF475569u;
+    r = &settings_rows[1];
+    memset(r, 0, sizeof *r);
+    snprintf(r->title, sizeof r->title, "Equalizer: %s", player_eq_names[eq_preset]);
+    snprintf(r->subtitle, sizeof r->subtitle, "Runs on the Media Engine \xC2\xB7 \xE2\x9C\x95 to change");
+    r->color = eq_preset ? xmb.theme_target.accent : 0xFF475569u;
     for (int k = 0; k < theme_count; ++k) {
-        r = &settings_rows[k + 1];
+        r = &settings_rows[k + SETTINGS_FIXED];
         memset(r, 0, sizeof *r);
         copy_text(r->title, sizeof r->title, theme_names[k]);
         snprintf(r->subtitle, sizeof r->subtitle,
@@ -274,7 +290,7 @@ static void fill_settings(void)
         r->playing = k == theme_active;
     }
     xmb.lists[UI_CAT_SETTINGS][0].rows = settings_rows;
-    xmb.lists[UI_CAT_SETTINGS][0].count = theme_count + 1;
+    xmb.lists[UI_CAT_SETTINGS][0].count = theme_count + SETTINGS_FIXED;
 }
 
 static void save_settings(void)
@@ -283,8 +299,10 @@ static void save_settings(void)
     path_in_app(path, sizeof path, "settings.ini");
     FILE *f = fopen(path, "w");
     if (!f) return;
-    fprintf(f, "# PSPotify ME settings\ntheme = %s\ncover_colors = %s\n",
-            theme_active >= 0 ? theme_names[theme_active] : "", cover_colors_on ? "on" : "off");
+    fprintf(f, "# PSPotify ME settings\ntheme = %s\ncover_colors = %s\nequalizer = %d\n"
+               "shuffle = %d\nrepeat = %d\n",
+            theme_active >= 0 ? theme_names[theme_active] : "", cover_colors_on ? "on" : "off",
+            eq_preset, shuffle_on, repeat_mode);
     fclose(f);
 }
 
@@ -308,9 +326,15 @@ static void load_settings(void)
             if (sscanf(line, " %31[a-z_] = %63[^\r\n]", key, value) != 2) continue;
             if (!strcmp(key, "theme")) copy_text(wanted, sizeof wanted, value);
             else if (!strcmp(key, "cover_colors")) cover_colors_on = strcmp(value, "off") != 0;
+            else if (!strcmp(key, "equalizer")) eq_preset = atoi(value);
+            else if (!strcmp(key, "shuffle")) shuffle_on = atoi(value) != 0;
+            else if (!strcmp(key, "repeat")) repeat_mode = atoi(value);
         }
         fclose(f);
     }
+    if (eq_preset < 0 || eq_preset >= PLAYER_EQ_PRESETS) eq_preset = 0;
+    if (repeat_mode < 0 || repeat_mode > 2) repeat_mode = 0;
+    control.eq_preset = eq_preset;
     scan_themes();
     int active = theme_count ? 0 : -1;
     for (int i = 0; i < theme_count; ++i)
@@ -372,6 +396,61 @@ static int loader_thread(SceSize args, void *argp)
     return 0;
 }
 
+/* ------------------------------------------------------------ play order */
+
+static unsigned int next_random(void)
+{
+    rng_state ^= rng_state << 13;
+    rng_state ^= rng_state >> 17;
+    rng_state ^= rng_state << 5;
+    return rng_state;
+}
+
+static void build_order(int first)
+{
+    const int n = queue_len;
+    for (int i = 0; i < n; ++i) order[i] = i;
+    if (!shuffle_on || n < 2) return;
+    rng_state ^= (unsigned int)sceKernelGetSystemTimeLow();
+    for (int i = n - 1; i > 0; --i) {
+        int j = (int)(next_random() % (unsigned int)(i + 1));
+        int t = order[i];
+        order[i] = order[j];
+        order[j] = t;
+    }
+    for (int i = 0; i < n; ++i)
+        if (order[i] == first) {
+            order[i] = order[0];
+            order[0] = first;
+            break;
+        }
+}
+
+static int order_position(int idx)
+{
+    for (int i = 0; i < queue_len; ++i)
+        if (order[i] == idx) return i;
+    return -1;
+}
+
+/* The track after idx. automatic: the current one ended by itself, so
+ * "repeat this track" plays it again. -1 at the end of the queue. */
+static int next_index(int idx, int automatic)
+{
+    if (automatic && repeat_mode == 2) return idx;
+    int p = order_position(idx);
+    if (p < 0) return -1;
+    if (p + 1 < queue_len) return order[p + 1];
+    return repeat_mode ? order[0] : -1;
+}
+
+static int prev_index(int idx)
+{
+    int p = order_position(idx);
+    if (p > 0) return order[p - 1];
+    return repeat_mode && queue_len > 0 ? order[queue_len - 1] : idx;
+}
+
 /* ------------------------------------------------------------ player thread */
 
 static int player_thread(SceSize args, void *argp)
@@ -392,8 +471,11 @@ static int player_thread(SceSize args, void *argp)
         control.paused = 0;
         control.position_ms = 0;
         control.fetched_pct = 0;
+        control.seek_ms = -1;
+        control.duration_ms = queue[idx].duration_ms;
         play_state = PS_LOADING;
-        if (idx + 1 < queue_len) spotify_ctx_prefetch(&ctx, queue[idx + 1].id);
+        int upcoming = next_index(idx, 1);
+        if (upcoming >= 0 && upcoming != idx) spotify_ctx_prefetch(&ctx, queue[upcoming].id);
 
         int ret = spotify_ctx_play(&ctx, queue[idx].id, &control);
         log_printf("UI: track %d ended (%d)\n", idx, ret);
@@ -415,7 +497,8 @@ static int player_thread(SceSize args, void *argp)
             failures = 0;
             play_state = PS_PLAYING;
         }
-        if (idx + 1 < queue_len) request_index = idx + 1;
+        int after = next_index(idx, ret >= 0);
+        if (after >= 0) request_index = after;
         else play_state = PS_IDLE;
     }
     return 0;
@@ -442,6 +525,7 @@ static void play_from(const spotify_track *tracks, int count, int idx, int key, 
         queue_key = key;
         copy_text(queue_name, sizeof queue_name, name);
     }
+    build_order(idx);
     log_printf("UI: play request %d (list %d, %d tracks)\n", idx, key, queue_len);
     start_track(idx);
 }
@@ -818,7 +902,13 @@ static void sync_state(void)
                           : "Couldn't play this track");
         else
             snprintf(n->album, sizeof n->album, "From %s", queue_name);
-        copy_text(n->next, sizeof n->next, idx + 1 < queue_len ? queue[idx + 1].name : "");
+        int upcoming = next_index(idx, 1);
+        copy_text(n->next, sizeof n->next,
+                  upcoming >= 0 && upcoming != idx ? queue[upcoming].name : "");
+        n->shuffle = shuffle_on;
+        n->repeat = repeat_mode;
+        n->seeking = seek_preview_ms >= 0;
+        if (n->seeking) n->pos_ms = (unsigned int)seek_preview_ms;
     }
 
     if (cover_pending) {
@@ -989,13 +1079,18 @@ static int handle(const ui_event *e)
             if (search_done_seq == search_req_seq && search_shown_seq == search_done_seq)
                 play_from(found, search_done_count, e->index, -10 - (int)search_done_seq,
                           "Search");
+        } else if (e->category == UI_CAT_SETTINGS && e->index == 1) {
+            eq_preset = (eq_preset + 1) % PLAYER_EQ_PRESETS;
+            control.eq_preset = eq_preset;
+            fill_settings();
+            save_settings();
         } else if (e->category == UI_CAT_SETTINGS && e->index == 0) {
             cover_colors_on = !cover_colors_on;
             retint(0);
             fill_settings();
             save_settings();
         } else if (e->category == UI_CAT_SETTINGS) {
-            apply_theme(e->index - 1, 0);
+            apply_theme(e->index - SETTINGS_FIXED, 0);
             save_settings();
         }
         break;
@@ -1003,11 +1098,11 @@ static int handle(const ui_event *e)
         control.paused = !control.paused;
         break;
     case UI_EV_NEXT:
-        start_track(current_index + 1);
+        start_track(next_index(current_index, 0));
         break;
     case UI_EV_PREV:
         /* Restart the song if it has been playing a while, else go back. */
-        start_track(control.position_ms > 3000 ? current_index : current_index - 1);
+        start_track(control.position_ms > 3000 ? current_index : prev_index(current_index));
         break;
     case UI_EV_VOLUME:
         set_volume(e->value);
@@ -1015,6 +1110,32 @@ static int handle(const ui_event *e)
     case UI_EV_SEARCH:
         start_search();
         break;
+    case UI_EV_SHUFFLE:
+        shuffle_on = !shuffle_on;
+        if (current_index >= 0) build_order(current_index);
+        save_settings();
+        break;
+    case UI_EV_REPEAT:
+        repeat_mode = (repeat_mode + 1) % 3;
+        save_settings();
+        break;
+    case UI_EV_SEEK: {
+        if (current_index < 0) break;
+        if (e->value == 0) {
+            /* Released: jump to the previewed time. */
+            if (seek_preview_ms >= 0) control.seek_ms = seek_preview_ms;
+            seek_preview_ms = -1;
+            seek_steps = 0;
+            break;
+        }
+        if (seek_preview_ms < 0) seek_preview_ms = (int)control.position_ms;
+        /* 5 s steps, 15 s once held for a couple of seconds. */
+        seek_preview_ms += e->value * (seek_steps++ < 8 ? 5000 : 15000);
+        const int end = (int)queue[current_index].duration_ms - 2000;
+        if (seek_preview_ms > end) seek_preview_ms = end;
+        if (seek_preview_ms < 0) seek_preview_ms = 0;
+        break;
+    }
     default:
         break;      /* search and seeking come later */
     }

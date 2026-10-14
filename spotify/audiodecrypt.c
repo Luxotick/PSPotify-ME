@@ -6,12 +6,29 @@ static const uint8_t AUDIO_IV[16] = {
     0xeb, 0xe8, 0xbc, 0x64, 0x3f, 0x63, 0x0d, 0x93
 };
 
+static uint32_t first_counter(void)
+{
+    return ((uint32_t)AUDIO_IV[12] << 24) | ((uint32_t)AUDIO_IV[13] << 16) |
+           ((uint32_t)AUDIO_IV[14] << 8) | (uint32_t)AUDIO_IV[15];
+}
+
 void audio_decrypt_init(audio_decrypt *d, const uint8_t key[16])
 {
     br_aes_ct_ctr_init(&d->keys, key, 16);
-    d->counter = ((uint32_t)AUDIO_IV[12] << 24) | ((uint32_t)AUDIO_IV[13] << 16) |
-                 ((uint32_t)AUDIO_IV[14] << 8) | (uint32_t)AUDIO_IV[15];
+    d->counter = first_counter();
     d->keystream_used = 16;
+}
+
+void audio_decrypt_seek(audio_decrypt *d, uint64_t offset)
+{
+    d->counter = first_counter() + (uint32_t)(offset / 16);
+    d->keystream_used = 16;
+    unsigned int skip = (unsigned int)(offset % 16);
+    if (skip) {
+        memset(d->keystream, 0, sizeof d->keystream);
+        d->counter = br_aes_ct_ctr_run(&d->keys, AUDIO_IV, d->counter, d->keystream, 16);
+        d->keystream_used = skip;
+    }
 }
 
 void audio_decrypt_run(audio_decrypt *d, uint8_t *buf, size_t len)
