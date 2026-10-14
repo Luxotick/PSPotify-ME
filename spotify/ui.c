@@ -545,12 +545,18 @@ typedef struct thumb_slot {
     char url[160];
     int state;
     r_tex *tex;
-    unsigned last_used;
+    unsigned last_used;     /* last frame the row was on screen */
+    unsigned first_wanted;  /* frame it was first asked for */
+    int priority;           /* rows from the selected one; lower goes first */
 } thumb_slot;
+
+/* Rows must stay on screen this many frames before their cover is fetched,
+ * so scrolling past a list downloads nothing. */
+#define THUMB_DWELL 12
 
 static thumb_slot thumbs[THUMB_SLOTS];
 static SceUID thumb_lock = -1;
-static unsigned frame_no;
+static volatile unsigned frame_no;
 static uint32_t thumb_px[THUMB * THUMB];
 static volatile int thumb_px_slot = -1;     /* slot whose pixels wait for upload */
 
@@ -565,7 +571,7 @@ static void forget_texture(const r_tex *tex)
 }
 
 /* The texture for url if it is loaded; otherwise queues it. UI thread. */
-static r_tex *thumb_for(const char *url)
+static r_tex *thumb_for(const char *url, int priority)
 {
     if (!url[0] || thumb_lock < 0) return NULL;
     sceKernelWaitSema(thumb_lock, 1, NULL);
@@ -586,6 +592,7 @@ static r_tex *thumb_for(const char *url)
     }
     if (found >= 0) {
         thumbs[found].last_used = frame_no;
+        thumbs[found].priority = priority;
         if (thumbs[found].state == THUMB_READY) tex = thumbs[found].tex;
     } else if (victim >= 0) {
         thumb_slot *s = &thumbs[victim];
@@ -596,7 +603,8 @@ static r_tex *thumb_for(const char *url)
         }
         copy_text(s->url, sizeof s->url, url);
         s->state = THUMB_WANTED;
-        s->last_used = frame_no;
+        s->last_used = s->first_wanted = frame_no;
+        s->priority = priority;
     }
     sceKernelSignalSema(thumb_lock, 1);
     return tex;
@@ -627,10 +635,16 @@ static int thumb_thread(SceSize args, void *argp)
     while (!player_quit) {
         int slot = -1;
         sceKernelWaitSema(thumb_lock, 1, NULL);
-        for (int i = 0; i < THUMB_SLOTS; ++i)
-            if (thumbs[i].state == THUMB_WANTED &&
-                (slot < 0 || thumbs[i].last_used > thumbs[slot].last_used))
-                slot = i;
+        /* Only rows on screen now that have stayed there a moment; the one
+         * nearest the selection first. */
+        const unsigned now = frame_no;
+        for (int i = 0; i < THUMB_SLOTS; ++i) {
+            const thumb_slot *s = &thumbs[i];
+            if (s->state != THUMB_WANTED || s->last_used + 2 < now ||
+                now - s->first_wanted < THUMB_DWELL)
+                continue;
+            if (slot < 0 || s->priority < thumbs[slot].priority) slot = i;
+        }
         if (slot >= 0) {
             thumbs[slot].state = THUMB_LOADING;
             copy_text(url, sizeof url, thumbs[slot].url);
@@ -665,8 +679,9 @@ static void assign_thumbs(void)
         if (!list->rows || list->count <= 0) continue;
         if (lvl != xmb.level[cat] && (xmb.level_pos[cat] < 0.02f || xmb.level_pos[cat] > 0.98f))
             continue;
-        int center = (int)xmb.scroll[cat][lvl];
-        for (int i = center - 3; i <= center + 8; ++i) {
+        /* The rows on screen: one above the selection and about three below. */
+        int center = (int)(xmb.scroll[cat][lvl] + 0.5f);
+        for (int i = center - 1; i <= center + 3; ++i) {
             if (i < 0 || i >= list->count) continue;
             char url[160];
             url[0] = '\0';
@@ -676,7 +691,7 @@ static void assign_thumbs(void)
                 const spotify_track *t = cat == UI_CAT_LIKED ? &liked[i] : &opened[i];
                 if (t->has_thumb) image_url(t->thumb, url, sizeof url);
             }
-            list->rows[i].cover = thumb_for(url);
+            list->rows[i].cover = thumb_for(url, i > center ? i - center : center - i);
         }
     }
 }
@@ -922,6 +937,7 @@ int spotify_ui_run(volatile int *exit_requested)
         return 0;
     }
     set_volume(80);
+    log_set_buffered(1);
     load_playlists();
 
     memory_log("pre-player-cover-threads");
@@ -958,6 +974,7 @@ int spotify_ui_run(volatile int *exit_requested)
         ui_update(&xmb, read_buttons(), dt);
         for (int i = 0; i < xmb.event_count && !quit; ++i) quit = handle(&xmb.events[i]);
         sync_state();
+        log_tick();
 
         render_gu_begin();
         ui_draw(&xmb);
@@ -982,6 +999,7 @@ int spotify_ui_run(volatile int *exit_requested)
     }
     spotify_ctx_stop(&ctx);
     if (thumb_lock >= 0) sceKernelDeleteSema(thumb_lock);
+    log_set_buffered(0);
     render_gu_term();
     return me_dead ? PLAYER_ERR_ME_TIMEOUT : 0;
 }

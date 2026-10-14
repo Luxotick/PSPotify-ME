@@ -16,6 +16,53 @@ static int echo = 1;
 /* UI, player and fetch threads all log; keep lines whole. */
 static SceUID log_lock = -1;
 
+#define LOG_BUFFER 8192
+#define LOG_FLUSH_AT 6144
+#define LOG_FLUSH_US 2000000
+static char pending[LOG_BUFFER];
+static size_t pending_len;
+static int buffered;
+static SceInt64 pending_since;
+
+/* Caller holds log_lock. */
+static void write_out(const char *data, size_t len)
+{
+    /* Open/append/close: the FAT size is only committed on close, so a
+     * crash or hang still leaves everything written so far readable. */
+    SceUID f = sceIoOpen(LOG_PATH, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
+    if (f >= 0) {
+        sceIoWrite(f, data, len);
+        sceIoClose(f);
+    }
+}
+
+static void flush_locked(void)
+{
+    if (pending_len) write_out(pending, pending_len);
+    pending_len = 0;
+}
+
+void log_set_buffered(int on)
+{
+    if (log_lock >= 0) sceKernelWaitSema(log_lock, 1, NULL);
+    if (!on) flush_locked();
+    buffered = on;
+    if (log_lock >= 0) sceKernelSignalSema(log_lock, 1);
+}
+
+void log_flush(void)
+{
+    if (log_lock >= 0) sceKernelWaitSema(log_lock, 1, NULL);
+    flush_locked();
+    if (log_lock >= 0) sceKernelSignalSema(log_lock, 1);
+}
+
+void log_tick(void)
+{
+    if (!pending_len || sceKernelGetSystemTimeWide() - pending_since < LOG_FLUSH_US) return;
+    log_flush();
+}
+
 void log_set_echo(int on)
 {
     echo = on;
@@ -55,13 +102,19 @@ int log_printf(const char *fmt, ...)
     size_t len = strlen(buf);
     if (len) at_line_start = buf[len - 1] == '\n';
 
-    /* Open/append/close per call: the FAT size is only committed on close,
-     * so a crash or hang still leaves everything logged so far readable. */
-    SceUID f = sceIoOpen(LOG_PATH, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
-    if (f >= 0) {
-        if (stamp[0]) sceIoWrite(f, stamp, strlen(stamp));
-        sceIoWrite(f, buf, len);
-        sceIoClose(f);
+    if (!buffered) {
+        char line[540];
+        int m = snprintf(line, sizeof line, "%s%s", stamp, buf);
+        if (m > 0) write_out(line, (size_t)m < sizeof line ? (size_t)m : sizeof line - 1);
+    } else {
+        size_t stamp_len = strlen(stamp);
+        if (pending_len + stamp_len + len > sizeof pending) flush_locked();
+        if (!pending_len) pending_since = sceKernelGetSystemTimeWide();
+        memcpy(pending + pending_len, stamp, stamp_len);
+        pending_len += stamp_len;
+        memcpy(pending + pending_len, buf, len);
+        pending_len += len;
+        if (pending_len >= LOG_FLUSH_AT) flush_locked();
     }
     if (log_lock >= 0) sceKernelSignalSema(log_lock, 1);
     return n;
