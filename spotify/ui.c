@@ -83,6 +83,7 @@ static volatile int current_index = -1;
 static volatile play_state_t play_state = PS_IDLE;
 static volatile int player_quit;
 static volatile int me_dead;
+static volatile int last_error;    /* why the last track could not play */
 
 /* ------------------------------------------------------------ cover */
 
@@ -403,6 +404,7 @@ static int player_thread(SceSize args, void *argp)
         if (ret == PLAYER_STOPPED) { play_state = PS_IDLE; continue; }
         if (ret < 0) {
             /* Unplayable track: skip ahead, but give up after a few in a row. */
+            last_error = ret;
             play_state = PS_ERROR;
             if (++failures >= 3) continue;
             sceKernelDelayThread(500000);
@@ -805,7 +807,12 @@ static void sync_state(void)
         n->paused = control.paused;
         n->loading = play_state == PS_LOADING && control.position_ms == 0;
         if (play_state == PS_ERROR)
-            snprintf(n->album, sizeof n->album, "Couldn't play this track (Spotify Premium needed?)");
+            copy_text(n->album, sizeof n->album,
+                      last_error == PLAYER_ERR_NO_MEMORY ? "Couldn't play: not enough memory"
+                      : last_error <= -4 && last_error > -10
+                          ? "Spotify refused this track (Premium needed?)"
+                          : last_error == -2 ? "No playable version of this track"
+                          : "Couldn't play this track");
         else
             snprintf(n->album, sizeof n->album, "From %s", queue_name);
         copy_text(n->next, sizeof n->next, idx + 1 < queue_len ? queue[idx + 1].name : "");

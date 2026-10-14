@@ -6,6 +6,8 @@
 /* The ME did not finish a decode in time; it may still be running, so no
  * further ME work may be dispatched and the app must reboot to exit. */
 #define PLAYER_ERR_ME_TIMEOUT (-100)
+/* Not even the smallest stream buffer could be allocated. */
+#define PLAYER_ERR_NO_MEMORY (-101)
 /* Playback ended because control->stop was set. */
 #define PLAYER_STOPPED 1
 

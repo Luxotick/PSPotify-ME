@@ -28,6 +28,12 @@
 #define ME_WINDOW_MIN (32u * 1024u)
 #define ME_WINDOW_MAX (256u * 1024u)
 #define ME_TIMEOUT_US 2000000u
+/* Stream buffer sizes to try, largest first. A file that fits is held
+ * whole; a longer one streams through the buffer, about 150 s of 160 kbps
+ * audio ahead at 3 MiB. Whole-file buffering failed on long tracks (a
+ * 12.5 MB file found no 12.5 MB block in a fragmented heap). */
+static const size_t ring_sizes[] = { 3u << 20, 3u << 19, 3u << 18 };
+#define FETCH_MIN_ROOM 4096
 
 /* Each slot is played by audio DMA after OutputBlocking returns, so the next
  * block is written into a different slot (one shared buffer crackled). */
@@ -35,12 +41,19 @@ static int16_t output_ring[OUTPUT_SLOTS][BLOCK_FRAMES * 2] __attribute__((aligne
 /* All stb_vorbis setup and decode memory; no malloc or alloca. */
 static char vorbis_memory[384 * 1024] __attribute__((aligned(64)));
 
+/* The file streams through buf as a ring of `ring` bytes: absolute file
+ * offset p lives at buf[p % ring]. When the file does not fit, ME_WINDOW_MAX
+ * extra bytes after the ring mirror its start, so any decode window of up
+ * to ME_WINDOW_MAX bytes is contiguous wherever it begins. */
 typedef struct {
     http_stream http;
     audio_decrypt decrypt;
     uint8_t *buf;
-    size_t capacity;
-    volatile size_t buffered;   /* decrypted bytes available */
+    size_t capacity;            /* file size */
+    size_t ring;                /* == capacity when the whole file fits */
+    int wraps;
+    volatile size_t buffered;   /* decrypted bytes received (absolute) */
+    volatile size_t consumed;   /* bytes the decoder is done with (absolute) */
     volatile int open;          /* fetch thread still running */
     volatile int stop;
 } fetcher;
@@ -50,13 +63,27 @@ static int fetch_thread(SceSize args, void *argp)
     (void)args;
     fetcher *f = *(fetcher **)argp;
     while (!f->stop && f->buffered < f->capacity) {
-        size_t space = f->capacity - f->buffered;
-        size_t chunk = space > FETCH_CHUNK ? FETCH_CHUNK : space;
-        uint8_t *dst = f->buf + f->buffered;
+        const size_t at = f->buffered, off = at % f->ring;
+        /* Never overwrite what the decoder has not consumed yet. */
+        size_t room = f->consumed + f->ring - at;
+        if (room < FETCH_MIN_ROOM && at + room < f->capacity) {
+            sceKernelDelayThread(10000);
+            continue;
+        }
+        size_t chunk = FETCH_CHUNK;
+        if (chunk > f->capacity - at) chunk = f->capacity - at;
+        if (chunk > f->ring - off) chunk = f->ring - off;
+        if (chunk > room) chunk = room;
+        uint8_t *dst = f->buf + off;
         int r = http_stream_read(&f->http, dst, (unsigned int)chunk);
         if (r <= 0) break;
         /* Publish only decrypted bytes. */
         audio_decrypt_run(&f->decrypt, dst, (size_t)r);
+        if (f->wraps && off < ME_WINDOW_MAX) {
+            size_t mirror = ME_WINDOW_MAX - off;
+            if (mirror > (size_t)r) mirror = (size_t)r;
+            memcpy(f->buf + f->ring + off, dst, mirror);
+        }
         f->buffered += (size_t)r;
     }
     f->open = 0;
@@ -197,30 +224,34 @@ int spotify_play_ogg(const char *urls, unsigned int url_stride, int url_count,
         /* Keep cover/TLS mallocs from racing the snapshot and allocation. */
         __malloc_lock(_REENT);
         budget = memory_track_budget(memory_read());
-        if (f.capacity > budget) {
-            __malloc_unlock(_REENT);
-            log_printf("PLAYER: track skipped: Content-Length %llu exceeds safe allocation budget %u on PSP-1000\n",
-                       (unsigned long long)content_length, (unsigned int)budget);
-            http_stream_close(&f.http);
-            return -2;
-        }
     }
-    f.buf = malloc(f.capacity);
+    for (size_t i = 0; i < sizeof ring_sizes / sizeof ring_sizes[0] && !f.buf; ++i) {
+        f.wraps = f.capacity > ring_sizes[i];
+        f.ring = f.wraps ? ring_sizes[i] : f.capacity;
+        size_t bytes = f.ring + (f.wraps ? ME_WINDOW_MAX : 0);
+        if (spotify_device_model == 0 && bytes > budget) continue;
+        f.buf = malloc(bytes);
+    }
     if (spotify_device_model == 0) {
         __malloc_unlock(_REENT);
         log_printf("MEM track-budget: model=0 content_length=%u safe_budget=%u heap_margin=4194304 kernel_guard=1048576\n",
                    (unsigned int)f.capacity, (unsigned int)budget);
     }
     if (!f.buf) {
-        log_printf("PLAYER: track skipped: malloc(%u) failed\n", (unsigned int)f.capacity);
+        log_printf("PLAYER: track skipped: no memory for a stream buffer (file %u KB)\n",
+                   (unsigned int)(f.capacity / 1024));
         memory_log("track-allocation-failed");
         http_stream_close(&f.http);
-        return -2;
+        return PLAYER_ERR_NO_MEMORY;
     }
     memory_log("post-track-allocation");
     audio_decrypt_init(&f.decrypt, key);
     f.open = 1;
-    log_printf("PLAYER: %u KB Ogg Vorbis file\n", (unsigned int)(f.capacity / 1024));
+    if (f.wraps)
+        log_printf("PLAYER: %u KB Ogg Vorbis file, streaming through %u KB\n",
+                   (unsigned int)(f.capacity / 1024), (unsigned int)(f.ring / 1024));
+    else
+        log_printf("PLAYER: %u KB Ogg Vorbis file\n", (unsigned int)(f.capacity / 1024));
 
 
     fetcher *fp = &f;
@@ -245,6 +276,7 @@ int spotify_play_ogg(const char *urls, unsigned int url_stride, int url_count,
     stb_vorbis *v = NULL;
     stb_vorbis_alloc alloc = { vorbis_memory, (int)sizeof vorbis_memory };
     size_t pos = SPOTIFY_OGG_HEADER;
+    f.consumed = pos;
     int channel = -1;
     unsigned int waits = 0;
     ring_state ring = { 0, 0, 0 };
@@ -256,8 +288,12 @@ int spotify_play_ogg(const char *urls, unsigned int url_stride, int url_count,
         size_t have = f.buffered;
         if (have > pos) {
             int used = 0, error = 0;
-            v = stb_vorbis_open_pushdata(f.buf + pos, (int)(have - pos), &used, &error, &alloc);
-            if (v) { pos += (size_t)used; break; }
+            /* The headers sit at the start of the ring, contiguous for up to
+             * ME_WINDOW_MAX bytes past its end thanks to the mirror. */
+            size_t avail = have - pos;
+            if (f.wraps && avail > ME_WINDOW_MAX) avail = ME_WINDOW_MAX;
+            v = stb_vorbis_open_pushdata(f.buf + pos, (int)avail, &used, &error, &alloc);
+            if (v) { pos += (size_t)used; f.consumed = pos; break; }
             if (error != VORBIS_need_more_data) {
                 log_printf("PLAYER: Vorbis open error %d\n", error);
                 ret = -4;
@@ -313,7 +349,7 @@ int spotify_play_ogg(const char *urls, unsigned int url_stride, int url_count,
             size_t len = have - pos;
             if (len > window) len = window;
 
-            ret = me_dispatch(v, f.buf + pos, len, first, me_pcm[cur]);
+            ret = me_dispatch(v, f.buf + pos % f.ring, len, first, me_pcm[cur]);
             if (ret < 0) {
                 log_printf("PLAYER: ME dispatch 0x%08X\n", (unsigned int)ret);
                 goto out;
@@ -342,6 +378,7 @@ int spotify_play_ogg(const char *urls, unsigned int url_stride, int url_count,
                 continue;
             }
             pos += (size_t)me_job.used;
+            f.consumed = pos;   /* the fetch thread may now reuse that space */
             prev_frames = me_job.frames;
             cur ^= 1;
             if (ring.frames >= next_report) {
