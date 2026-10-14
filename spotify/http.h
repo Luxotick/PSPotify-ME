@@ -34,6 +34,9 @@ struct in_addr;
  * failure. Used for HTTP and for the Spotify access point. */
 int net_resolve(const char *host, struct in_addr *out);
 
+/* A connected TCP socket to host:port (DNS through the cache), or < 0. */
+int http_connect(const char *host, unsigned short port);
+
 /* Seeds TLS entropy. Call once after the network is up. */
 int http_init(void);
 void http_term(void);

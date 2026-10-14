@@ -198,6 +198,46 @@ int tls_read(tls_conn *c, void *buf, size_t len)
     return r;
 }
 
+int tls_read_wait(tls_conn *c, void *buf, size_t len, int timeout_ms)
+{
+    br_ssl_engine_context *eng = &c->sc.eng;
+    for (;;) {
+        const unsigned int st = br_ssl_engine_current_state(eng);
+        if (st & BR_SSL_CLOSED) return -1;
+        if (st & BR_SSL_SENDREC) {
+            size_t n;
+            unsigned char *p = br_ssl_engine_sendrec_buf(eng, &n);
+            int w = (int)sceNetInetSend(c->sock, p, n, 0);
+            if (w <= 0) return -1;
+            br_ssl_engine_sendrec_ack(eng, (size_t)w);
+            continue;
+        }
+        if (st & BR_SSL_RECVAPP) {
+            size_t n;
+            unsigned char *p = br_ssl_engine_recvapp_buf(eng, &n);
+            if (n > len) n = len;
+            memcpy(buf, p, n);
+            br_ssl_engine_recvapp_ack(eng, n);
+            return (int)n;
+        }
+        if (st & BR_SSL_RECVREC) {
+            /* Wait for the socket first, so a quiet connection is not an
+             * error: BearSSL fails the engine on any read error. */
+            SceNetInetPollfd pfd = { c->sock, SCE_NET_INET_POLLIN, 0 };
+            int ready = sceNetInetPoll(&pfd, 1, timeout_ms);
+            if (ready == 0) return 0;
+            if (ready < 0) return -1;
+            size_t n;
+            unsigned char *p = br_ssl_engine_recvrec_buf(eng, &n);
+            int r = (int)sceNetInetRecv(c->sock, p, n, 0);
+            if (r <= 0) return -1;
+            br_ssl_engine_recvrec_ack(eng, (size_t)r);
+            continue;
+        }
+        return -1;
+    }
+}
+
 void tls_close(tls_conn *c)
 {
     if (!c) return;

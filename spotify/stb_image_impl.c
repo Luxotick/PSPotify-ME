@@ -6,4 +6,6 @@
 #define STBI_NO_STDIO
 #define STBI_NO_LINEAR
 #define STBI_NO_HDR
+/* The zlib decoder also inflates gzip-compressed Spotify Connect pushes. */
+#define STBI_SUPPORT_ZLIB
 #include "stb_image.h"

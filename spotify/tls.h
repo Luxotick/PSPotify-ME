@@ -16,6 +16,10 @@ void tls_seed_entropy(void);
 tls_conn *tls_open(int sock, const char *host);
 int tls_write_all(tls_conn *c, const void *buf, size_t len);
 int tls_read(tls_conn *c, void *buf, size_t len);
+/* Like tls_read, but waits at most timeout_ms for data: returns 0 when
+ * nothing arrived in time (the connection stays usable), < 0 on error or
+ * close. For long-lived connections that must also send on their own. */
+int tls_read_wait(tls_conn *c, void *buf, size_t len, int timeout_ms);
 /* Sends close_notify (best effort) and frees the context. */
 void tls_close(tls_conn *c);
 /* Full and resumed handshakes since start, for the log. */

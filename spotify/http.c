@@ -172,6 +172,11 @@ static int tcp_connect(const char *host, unsigned short port)
     return sock;
 }
 
+int http_connect(const char *host, unsigned short port)
+{
+    return tcp_connect(host, port);
+}
+
 static int transport_recv(http_stream *s, void *buf, size_t len)
 {
     if (s->tls) return tls_read(s->tls, buf, len);

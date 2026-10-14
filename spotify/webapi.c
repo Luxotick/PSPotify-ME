@@ -1165,6 +1165,33 @@ static int sp_context_unlocked(const char *client_token, const char *access_toke
     return out && max > 0 ? scan_track_ids(len, out, max) : 0;
 }
 
+int spotify_sp_put_state(const char *client_token, const char *access_token,
+                         const char *device_id, const char *connection_id,
+                         const uint8_t *body, size_t body_len,
+                         uint8_t *reply, size_t reply_cap, size_t *reply_len)
+{
+    static char url[160];
+    static char put_headers[2560];
+    lock();
+    *reply_len = 0;
+    int status = -1;
+    if (sp_headers(client_token, access_token, "application/x-protobuf") == 0) {
+        int n = snprintf(put_headers, sizeof put_headers, "%sX-Spotify-Connection-Id: %s\r\n",
+                         headers, connection_id);
+        snprintf(url, sizeof url, SPCLIENT "/connect-state/v1/devices/%s", device_id);
+        if (n > 0 && (size_t)n < sizeof put_headers) {
+            size_t len = 0;
+            status = request_all("PUT", url, put_headers, body, body_len, &len);
+            if (status == 200 && reply) {
+                *reply_len = len < reply_cap ? len : reply_cap;
+                memcpy(reply, resp_buf, *reply_len);
+            }
+        }
+    }
+    unlock();
+    return status;
+}
+
 int spotify_sp_recent(const char *client_token, const char *access_token,
                       const char *username, spotify_context *out, int max)
 {

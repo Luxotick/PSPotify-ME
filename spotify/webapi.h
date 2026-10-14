@@ -104,6 +104,13 @@ int spotify_sp_recent(const char *client_token, const char *access_token,
  * page of songs, ids only. Returns the number of songs. */
 int spotify_sp_context(const char *client_token, const char *access_token, const char *uri,
                        char *name, size_t name_cap, spotify_track *out, int max);
+/* Spotify Connect: publishes this device's state (a PutStateRequest
+ * protobuf) for the dealer connection connection_id. Returns the HTTP
+ * status; on 200 the reply (a Cluster protobuf) is copied to reply. */
+int spotify_sp_put_state(const char *client_token, const char *access_token,
+                         const char *device_id, const char *connection_id,
+                         const uint8_t *body, size_t body_len,
+                         uint8_t *reply, size_t reply_cap, size_t *reply_len);
 /* Songs matching a search (UTF-8 query), ids only, best match first. Names
  * are filled by spotify_sp_track_details. */
 int spotify_sp_search(const char *client_token, const char *access_token,
