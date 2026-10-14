@@ -84,6 +84,8 @@ static volatile play_state_t play_state = PS_IDLE;
 static volatile int player_quit;
 static volatile int me_dead;
 static volatile int last_error;    /* why the last track could not play */
+/* Set after a system dialog held the UI loop, so frame stats skip that gap. */
+static int skip_frame_timing;
 
 /* ------------------------------------------------------------ cover */
 
@@ -937,6 +939,7 @@ static int ask_text(const char *title, char *out, size_t cap)
         }
         render_gu_present();
     }
+    skip_frame_timing = 1;
     if (data.result != PSP_UTILITY_OSK_RESULT_CHANGED || !typed[0]) return 0;
     utf16_to_utf8(typed, out, cap);
     return out[0] != '\0';
@@ -1151,6 +1154,10 @@ int spotify_ui_run(volatile int *exit_requested)
 
         ui_update(&xmb, read_buttons(), dt);
         for (int i = 0; i < xmb.event_count && !quit; ++i) quit = handle(&xmb.events[i]);
+        if (skip_frame_timing) {
+            skip_frame_timing = 0;
+            last = sceKernelGetSystemTimeWide();
+        }
         sync_state();
         log_tick();
 
