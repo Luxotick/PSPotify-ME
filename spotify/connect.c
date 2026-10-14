@@ -682,27 +682,34 @@ static void handle_message(char *json)
         json_str(json, "message_ident", ident, sizeof ident);
         size_t len = 0;
         const char *b64 = json_str_span(json, "compressed", &len);
-        int ok = 0, size = -1;
         uint8_t *payload = NULL;
-        if (b64 && (size = decode_payload(b64, len, &payload)) > 0) {
-            ok = handle_command((const char *)payload);
-            if (!ok) log_printf("CONNECT: unhandled request: %.160s\n", (const char *)payload);
-            free(payload);
-        } else if (!b64) {
+        const char *command = NULL;
+        if (b64) {
+            if (decode_payload(b64, len, &payload) > 0) command = (const char *)payload;
+        } else {
             /* Without gzip support the command comes as plain JSON:
              * "payload":{"message_id":..,"command":{"endpoint":..}}. */
-            const char *plain = strstr(json, "\"payload\"");
-            if (plain) {
-                size = (int)strlen(plain);
-                ok = handle_command(plain);
-                if (!ok) log_printf("CONNECT: unhandled request: %.160s\n", plain);
-            } else {
-                log_printf("CONNECT: request without payload: %.200s\n", json);
-            }
+            command = strstr(json, "\"payload\"");
         }
-        log_printf("CONNECT: request %s (%u chars, %d bytes decoded), reply %s\n", ident,
-                   (unsigned int)len, size, ok ? "ok" : "failed");
+        /* Acknowledge at once: the dealer drops the connection when a reply
+         * takes seconds, and loading a context for "play" does. */
+        char endpoint[48] = "";
+        if (command) json_str(command, "endpoint", endpoint, sizeof endpoint);
+        static const char *const known[] = {
+            "transfer", "play", "pause", "resume", "skip_next", "skip_prev", "seek_to",
+            "set_shuffling_context", "set_repeating_context", "set_repeating_track",
+            "set_options",
+        };
+        int ok = 0;
+        for (size_t i = 0; i < sizeof known / sizeof known[0]; ++i)
+            ok |= !strcmp(endpoint, known[i]);
         reply(key, ok);
+        log_printf("CONNECT: request %s %s, reply %s\n", ident, endpoint[0] ? endpoint : "?",
+                   ok ? "ok" : "failed");
+        if (ok) handle_command(command);
+        else if (command) log_printf("CONNECT: unhandled request: %.160s\n", command);
+        else log_printf("CONNECT: request without payload: %.200s\n", json);
+        free(payload);
         return;
     }
     char uri[160] = "";
