@@ -1147,12 +1147,12 @@ int spotify_ui_run(volatile int *exit_requested)
         if (frame_us > 20000) ++slow_frames;
         if (frame_us > worst_us) worst_us = frame_us;
         if (now - stats_start >= 10000000u) {
-            unsigned int opened, reused, full, resumed;
-            http_stats(&opened, &reused);
-            tls_stats(&full, &resumed);
+            unsigned int conn_new, conn_reused, tls_full, tls_resumed;
+            http_stats(&conn_new, &conn_reused);
+            tls_stats(&tls_full, &tls_resumed);
             log_printf("UI: %u frames in 10 s, %u slow (>20 ms), worst %u ms; "
                        "connections %u new, %u reused; TLS %u full, %u resumed\n", frames,
-                       slow_frames, worst_us / 1000u, opened, reused, full, resumed);
+                       slow_frames, worst_us / 1000u, conn_new, conn_reused, tls_full, tls_resumed);
             stats_start = now;
             frames = slow_frames = worst_us = 0;
         }
