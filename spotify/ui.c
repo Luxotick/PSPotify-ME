@@ -601,12 +601,12 @@ static r_tex *thumb_for(const char *url, int priority)
     if (!url[0] || thumb_lock < 0) return NULL;
     sceKernelWaitSema(thumb_lock, 1, NULL);
     r_tex *tex = NULL;
-    int found = -1, victim = -1;
-    for (int i = 0; i < THUMB_SLOTS && found < 0; ++i)
-        if (thumbs[i].state != THUMB_FREE && !strcmp(thumbs[i].url, url)) found = i;
+    int hit = -1, victim = -1;
+    for (int i = 0; i < THUMB_SLOTS && hit < 0; ++i)
+        if (thumbs[i].state != THUMB_FREE && !strcmp(thumbs[i].url, url)) hit = i;
     /* Reuse a free slot, else the one unused for longest (never one being
      * downloaded, nor one drawn this or last frame). */
-    for (int i = 0; i < THUMB_SLOTS && found < 0; ++i) {
+    for (int i = 0; i < THUMB_SLOTS && hit < 0; ++i) {
         const thumb_slot *s = &thumbs[i];
         if (s->state == THUMB_FREE) {
             victim = i;
@@ -615,10 +615,10 @@ static r_tex *thumb_for(const char *url, int priority)
         if (s->state == THUMB_LOADING || s->last_used + 1 >= frame_no) continue;
         if (victim < 0 || s->last_used < thumbs[victim].last_used) victim = i;
     }
-    if (found >= 0) {
-        thumbs[found].last_used = frame_no;
-        thumbs[found].priority = priority;
-        if (thumbs[found].state == THUMB_READY) tex = thumbs[found].tex;
+    if (hit >= 0) {
+        thumbs[hit].last_used = frame_no;
+        thumbs[hit].priority = priority;
+        if (thumbs[hit].state == THUMB_READY) tex = thumbs[hit].tex;
     } else if (victim >= 0) {
         thumb_slot *s = &thumbs[victim];
         if (s->tex) {
