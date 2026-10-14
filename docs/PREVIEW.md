@@ -1,0 +1,51 @@
+# UI preview on a PC
+
+The new interface lives in `ui/` and does not depend on the PSP. `tools/preview` runs the same code in a 480×272 window with mock data, so you can try layout and theme changes without copying an EBOOT to the console.
+
+## Build
+
+Windows needs Visual Studio with "Desktop development with C++". Linux needs a C compiler and `libsdl2-dev`.
+
+```sh
+python scripts/build_preview.py
+```
+
+The script downloads pinned copies of SDL2 (Windows only), the M PLUS Rounded 1c fonts and the Lucide icon font into `.deps/`. The program ends up in `build-preview/`.
+
+## Run
+
+```sh
+build-preview/PSPotifyPreview
+```
+
+| Key | PSP button |
+|---|---|
+| Arrow keys | D-pad |
+| Z or Enter | ✕ |
+| X or Backspace | ○ |
+| A | □ |
+| S | △ |
+| Q / E | L / R (hold to seek) |
+| Esc | START |
+
+Options:
+
+- `--theme Daylight`: start with `themes/Daylight/theme.ini`.
+- `--play`: start with a song playing.
+- `--scale 3`: a bigger window.
+- `--shot out.png --keys right,down,cross`: press those buttons, then save a 480×272 screenshot and exit.
+
+## Themes
+
+Each folder in `themes/` is a theme with a `theme.ini`:
+
+```ini
+name = Midnight
+background = #0E0F13
+surface = #1B1D24
+text = #F2F2F2
+text_dim = #9EA3AE
+accent = #1ED760
+```
+
+The preview reloads the active theme as soon as you save the file. Pick another theme under Settings. A missing or malformed line keeps the default color.
