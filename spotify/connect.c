@@ -688,6 +688,17 @@ static void handle_message(char *json)
             ok = handle_command((const char *)payload);
             if (!ok) log_printf("CONNECT: unhandled request: %.160s\n", (const char *)payload);
             free(payload);
+        } else if (!b64) {
+            /* Without gzip support the command comes as plain JSON:
+             * "payload":{"message_id":..,"command":{"endpoint":..}}. */
+            const char *plain = strstr(json, "\"payload\"");
+            if (plain) {
+                size = (int)strlen(plain);
+                ok = handle_command(plain);
+                if (!ok) log_printf("CONNECT: unhandled request: %.160s\n", plain);
+            } else {
+                log_printf("CONNECT: request without payload: %.200s\n", json);
+            }
         }
         log_printf("CONNECT: request %s (%u chars, %d bytes decoded), reply %s\n", ident,
                    (unsigned int)len, size, ok ? "ok" : "failed");
