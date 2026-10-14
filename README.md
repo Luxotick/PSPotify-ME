@@ -16,23 +16,19 @@ A native Spotify client for the PlayStation Portable. Everything runs on the PSP
 Requires **Spotify Premium**.
 
 <p align="center">
-  <a href="https://youtu.be/Er0A1bQupJ0">
-    <img src="https://img.youtube.com/vi/Er0A1bQupJ0/hqdefault.jpg" width="480" alt="PSPotify ME showcase video">
+  <a href="https://youtu.be/5UoCwZZf08E">
+    <img src="https://img.youtube.com/vi/5UoCwZZf08E/hqdefault.jpg" width="480" alt="PSPotify ME showcase video">
   </a>
   <br>
-  <sub>▶ <a href="https://youtu.be/Er0A1bQupJ0">Showcase video</a> (an earlier version)</sub>
+  <sub>▶ <a href="https://youtu.be/5UoCwZZf08E">Showcase video</a> of the new interface · <a href="https://youtu.be/Er0A1bQupJ0">first version</a></sub>
 </p>
 
 <p align="center">
   <img src="docs/screenshots/psp-now-playing.png" width="384" alt="Now Playing on a PSP-3000">
   <img src="docs/screenshots/psp-search.png" width="384" alt="Search results with Cover colors on a PSP-3000">
 </p>
-<p align="center">
-  <img src="docs/screenshots/xmb-playlists.png" width="384" alt="Playlists in the Midnight theme">
-  <img src="docs/screenshots/xmb-daylight.png" width="384" alt="Now Playing in the Daylight theme">
-</p>
 
-<sub>Top: a real PSP-3000 (480×272). Bottom: the [PC preview](docs/PREVIEW.md), which runs the same interface code with sample data and stand-in covers.</sub>
+<sub>Screenshots from a PSP-3000 (480×272).</sub>
 
 ## Requirements
 
