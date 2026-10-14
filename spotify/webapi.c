@@ -1006,6 +1006,78 @@ static int is_base62(uint8_t c)
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
 }
 
+/* Collects the distinct spotify:track ids in resp_buf[0..len), in order. */
+static int scan_track_ids(size_t len, spotify_track *out, int max)
+{
+    static const char needle[] = "spotify:track:";
+    int count = 0;
+    for (size_t i = 0; i + 14 + 22 <= len && count < max; ++i) {
+        if (memcmp(resp_buf + i, needle, 14) != 0) continue;
+        const uint8_t *id = resp_buf + i + 14;
+        int ok = i + 36 >= len || !is_base62(id[22]);
+        for (int k = 0; k < 22 && ok; ++k) ok = is_base62(id[k]);
+        if (!ok) continue;
+        int seen = 0;
+        for (int k = 0; k < count && !seen; ++k) seen = memcmp(out[k].id, id, 22) == 0;
+        if (!seen) {
+            memcpy(out[count].id, id, 22);
+            out[count].id[22] = '\0';
+            ++count;
+        }
+        i += 35;
+    }
+    return count;
+}
+
+/* The JSON string value after the first "key": in resp_buf, unescaped
+ * (\uXXXX into UTF-8) and cut to fit. Returns 0 when found. */
+static int json_value(const char *key, char *out, size_t cap)
+{
+    char pattern[64];
+    int n = snprintf(pattern, sizeof pattern, "\"%s\"", key);
+    if (n < 0 || (size_t)n >= sizeof pattern) return -1;
+    const char *p = strstr((const char *)resp_buf, pattern);
+    if (!p) return -1;
+    p += n;
+    while (*p == ' ' || *p == ':') ++p;
+    if (*p++ != '"') return -1;
+    size_t len = 0;
+    while (*p && *p != '"') {
+        unsigned char ch = (unsigned char)*p++;
+        if (ch != '\\') {           /* plain bytes, raw UTF-8 included */
+            if (len + 1 >= cap) break;
+            out[len++] = (char)ch;
+            continue;
+        }
+        char e = *p ? *p++ : '\0';
+        unsigned int c = (unsigned char)e;
+        if (e == 'u') {
+            c = 0;
+            for (int k = 0; k < 4 && *p; ++k, ++p)
+                c = (c << 4) | (unsigned int)(*p <= '9' ? *p - '0' : (*p | 0x20) - 'a' + 10);
+        } else if (e == 'n' || e == 't' || e == 'r') {
+            c = ' ';
+        }
+        unsigned char utf8[3];
+        size_t m = 0;
+        if (c < 0x80) {
+            utf8[m++] = (unsigned char)c;
+        } else if (c < 0x800) {
+            utf8[m++] = (unsigned char)(0xC0 | (c >> 6));
+            utf8[m++] = (unsigned char)(0x80 | (c & 0x3F));
+        } else {
+            utf8[m++] = (unsigned char)(0xE0 | (c >> 12));
+            utf8[m++] = (unsigned char)(0x80 | ((c >> 6) & 0x3F));
+            utf8[m++] = (unsigned char)(0x80 | (c & 0x3F));
+        }
+        if (len + m >= cap) break;
+        memcpy(out + len, utf8, m);
+        len += m;
+    }
+    out[len] = '\0';
+    return 0;
+}
+
 static int sp_search_unlocked(const char *client_token, const char *access_token,
                               const char *query, spotify_track *out, int max)
 {
@@ -1026,25 +1098,89 @@ static int sp_search_unlocked(const char *client_token, const char *access_token
     int status = sp_get(url, &len);
     if (status != 200) return status < 0 ? status : -status;
 
-    static const char needle[] = "spotify:track:";
-    int count = 0;
-    for (size_t i = 0; i + 14 + 22 <= len && count < max; ++i) {
-        if (memcmp(resp_buf + i, needle, 14) != 0) continue;
-        const uint8_t *id = resp_buf + i + 14;
-        int ok = i + 36 >= len || !is_base62(id[22]);
-        for (int k = 0; k < 22 && ok; ++k) ok = is_base62(id[k]);
-        if (!ok) continue;
-        int seen = 0;
-        for (int k = 0; k < count && !seen; ++k) seen = memcmp(out[k].id, id, 22) == 0;
-        if (!seen) {
-            memcpy(out[count].id, id, 22);
-            out[count].id[22] = '\0';
-            ++count;
-        }
-        i += 35;
-    }
+    int count = scan_track_ids(len, out, max);
     log_printf("SEARCH: %d songs (%u bytes)\n", count, (unsigned int)len);
     return count;
+}
+
+static int sp_recent_unlocked(const char *client_token, const char *access_token,
+                              const char *username, spotify_context *out, int max)
+{
+    static char url[256];
+    if (sp_headers(client_token, access_token, "application/json") < 0) return -1;
+    snprintf(url, sizeof url, SPCLIENT "/recently-played/v3/user/%s/recently-played"
+             "?format=json&offset=0&limit=50&filter=default", username);
+    size_t len = 0;
+    int status = sp_get(url, &len);
+    if (status != 200) return status < 0 ? status : -status;
+    /* Every context appears as "uri":"spotify:<kind>:..." in the reply. */
+    static const char *const kinds[] = { "spotify:playlist:", "spotify:album:", "spotify:artist:",
+                                         "spotify:user:" };
+    int count = 0;
+    for (size_t i = 0; i + 16 < len && count < max; ++i) {
+        if (memcmp(resp_buf + i, "\"spotify:", 9) != 0) continue;
+        const char *start = (const char *)resp_buf + i + 1;
+        const char *end = memchr(start, '"', len - i - 1);
+        if (!end || end - start >= (long)sizeof out[0].uri) continue;
+        size_t n = (size_t)(end - start);
+        int known = 0;
+        for (size_t k = 0; k < sizeof kinds / sizeof kinds[0]; ++k)
+            known |= strncmp(start, kinds[k], strlen(kinds[k])) == 0;
+        /* spotify:user:<name>:collection is Liked Songs; other user URIs
+         * (profiles) are not playable contexts. */
+        if (known && strncmp(start, "spotify:user:", 13) == 0 &&
+            (n < 11 || memcmp(end - 11, ":collection", 11) != 0))
+            known = 0;
+        if (!known) continue;
+        int seen = 0;
+        for (int k = 0; k < count && !seen; ++k)
+            seen = strlen(out[k].uri) == n && memcmp(out[k].uri, start, n) == 0;
+        if (!seen) {
+            memcpy(out[count].uri, start, n);
+            out[count].uri[n] = '\0';
+            out[count].name[0] = '\0';
+            ++count;
+        }
+        i += n;
+    }
+    log_printf("RECENT: %d contexts (%u bytes)\n", count, (unsigned int)len);
+    return count;
+}
+
+static int sp_context_unlocked(const char *client_token, const char *access_token,
+                               const char *uri, char *name, size_t name_cap,
+                               spotify_track *out, int max)
+{
+    static char url[192];
+    if (sp_headers(client_token, access_token, "application/json") < 0) return -1;
+    int n = snprintf(url, sizeof url, SPCLIENT "/context-resolve/v1/%s", uri);
+    if (n < 0 || (size_t)n >= sizeof url) return -1;
+    size_t len = 0;
+    int status = sp_get(url, &len);
+    if (status != 200) return status < 0 ? status : -status;
+    if (name && name_cap) {
+        name[0] = '\0';
+        json_value("context_description", name, name_cap);
+    }
+    return out && max > 0 ? scan_track_ids(len, out, max) : 0;
+}
+
+int spotify_sp_recent(const char *client_token, const char *access_token,
+                      const char *username, spotify_context *out, int max)
+{
+    lock();
+    int r = sp_recent_unlocked(client_token, access_token, username, out, max);
+    unlock();
+    return r;
+}
+
+int spotify_sp_context(const char *client_token, const char *access_token, const char *uri,
+                       char *name, size_t name_cap, spotify_track *out, int max)
+{
+    lock();
+    int r = sp_context_unlocked(client_token, access_token, uri, name, name_cap, out, max);
+    unlock();
+    return r;
 }
 
 int spotify_sp_search(const char *client_token, const char *access_token,

@@ -90,6 +90,20 @@ int spotify_sp_playlists(const char *client_token, const char *access_token,
 int spotify_sp_tracks(const char *client_token, const char *access_token,
                       const char *username, const char *playlist_id,
                       spotify_track *out, int max);
+/* A playback context: playlist, album, artist or the user's Liked Songs. */
+typedef struct {
+    char uri[64];
+    char name[96];
+} spotify_context;
+
+/* The contexts the user played recently, newest first. Names are filled
+ * for playlists already known; spotify_sp_context gives the others. */
+int spotify_sp_recent(const char *client_token, const char *access_token,
+                      const char *username, spotify_context *out, int max);
+/* Resolves a context URI: its display name (may be empty) and its first
+ * page of songs, ids only. Returns the number of songs. */
+int spotify_sp_context(const char *client_token, const char *access_token, const char *uri,
+                       char *name, size_t name_cap, spotify_track *out, int max);
 /* Songs matching a search (UTF-8 query), ids only, best match first. Names
  * are filled by spotify_sp_track_details. */
 int spotify_sp_search(const char *client_token, const char *access_token,
