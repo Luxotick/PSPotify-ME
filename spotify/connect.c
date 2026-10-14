@@ -125,8 +125,7 @@ static size_t base64_decode(const char *in, size_t len, uint8_t *out, size_t cap
 static int gunzip(const uint8_t *in, size_t len, uint8_t *out, size_t cap)
 {
     if (len < 18 || in[0] != 0x1f || in[1] != 0x8b || in[2] != 8) {
-        log_printf("CONNECT: not a gzip payload
-");
+        log_printf("CONNECT: not a gzip payload\n");
         return -1;
     }
     const uint8_t flags = in[3];
@@ -155,8 +154,7 @@ static int decode_payload(const char *b64, size_t b64_len, uint8_t **out)
         int n = plain ? gunzip(raw, raw_len, plain, cap) : -1;
         free(raw);
         if (n < 0) {
-            log_printf("CONNECT: gzip payload did not inflate (%u bytes)
-", (unsigned int)raw_len);
+            log_printf("CONNECT: gzip payload did not inflate (%u bytes)\n", (unsigned int)raw_len);
             free(plain);
             return -1;
         }
@@ -688,12 +686,10 @@ static void handle_message(char *json)
         uint8_t *payload = NULL;
         if (b64 && (size = decode_payload(b64, len, &payload)) > 0) {
             ok = handle_command((const char *)payload);
-            if (!ok) log_printf("CONNECT: unhandled request: %.160s
-", (const char *)payload);
+            if (!ok) log_printf("CONNECT: unhandled request: %.160s\n", (const char *)payload);
             free(payload);
         }
-        log_printf("CONNECT: request %s (%u chars, %d bytes decoded), reply %s
-", ident,
+        log_printf("CONNECT: request %s (%u chars, %d bytes decoded), reply %s\n", ident,
                    (unsigned int)len, size, ok ? "ok" : "failed");
         reply(key, ok);
         return;
@@ -702,13 +698,11 @@ static void handle_message(char *json)
     json_str(json, "uri", uri, sizeof uri);
     if (strcmp(type, "message") != 0) {
         if (strcmp(type, "pong") != 0)
-            log_printf("CONNECT: dealer %s %s (%u bytes)
-", type, uri,
+            log_printf("CONNECT: dealer %s %s (%u bytes)\n", type, uri,
                        (unsigned int)strlen(json));
         return;
     }
-    log_printf("CONNECT: message %s (%u bytes)
-", uri, (unsigned int)strlen(json));
+    log_printf("CONNECT: message %s (%u bytes)\n", uri, (unsigned int)strlen(json));
     if (!strncmp(uri, "hm://pusher/v1/connections/", 27)) {
         if (json_str(json, "Spotify-Connection-Id", connection_id, sizeof connection_id) > 0) {
             int st = put_state(3);      /* NEW_DEVICE */
@@ -824,8 +818,7 @@ static void run_dealer(void)
             }
             if (rx[1] & 0x80) pos += 4;
             if (plen > RX_CAP - 16 || msg_len + plen > MSG_CAP) {
-                log_printf("CONNECT: skipping a %u-byte frame
-", (unsigned int)plen);
+                log_printf("CONNECT: skipping a %u-byte frame\n", (unsigned int)plen);
                 /* Drop this frame (and the message it belongs to). */
                 skip = (size_t)plen + pos;
                 msg_len = 0;
