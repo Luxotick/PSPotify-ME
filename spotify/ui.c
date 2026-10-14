@@ -388,7 +388,7 @@ static void load_settings(void)
     char path[300], line[128], wanted[32] = "Midnight";
     path_in_app(path, sizeof path, "settings.ini");
     FILE *f = fopen(path, "r");
-    const int missing = !f;
+    int has_debug = 0;
     if (f) {
         while (fgets(line, sizeof line, f)) {
             char key[32], value[64];
@@ -400,6 +400,7 @@ static void load_settings(void)
                 connect_on = PSPOTIFY_CONNECT && strcmp(value, "off") != 0;
             else if (!strcmp(key, "shuffle")) shuffle_on = atoi(value) != 0;
             else if (!strcmp(key, "repeat")) repeat_mode = atoi(value);
+            else if (!strcmp(key, "debug")) has_debug = 1;   /* read by log_init */
         }
         fclose(f);
     }
@@ -411,8 +412,9 @@ static void load_settings(void)
     for (int i = 0; i < theme_count; ++i)
         if (!strcmp(theme_names[i], wanted)) active = i;
     apply_theme(active, 1);
-    /* First start: write the file so the debug switch is there to edit. */
-    if (missing) save_settings();
+    /* First start, or a file from an older version: write it once so the
+     * debug switch is there to edit. */
+    if (!has_debug) save_settings();
 }
 
 /* ------------------------------------------------------------ loader thread */
