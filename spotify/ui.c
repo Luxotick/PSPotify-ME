@@ -132,9 +132,16 @@ static char theme_names[MAX_THEMES][32];
 static uint32_t theme_swatch[MAX_THEMES];   /* accent, shown in Settings */
 static int theme_count, theme_active = -1;
 /* Settings: Cover colors, Equalizer, then one row per theme. */
-#define SETTINGS_FIXED 2
+#define SETTINGS_FIXED 3
 static ui_row settings_rows[MAX_THEMES + SETTINGS_FIXED];
 static int eq_preset;
+static int connect_on = 1;      /* Spotify Connect, Settings row 2 */
+
+static const char *connect_name(void)
+{
+    return spotify_device_model == 0 ? "PSP-1000" : spotify_device_model == 1 ? "PSP-2000"
+         : spotify_device_model == 4 ? "PSP Go" : "PSP-3000";
+}
 static ui_theme base_theme;
 static int cover_colors_on = 1;
 static int have_palette;
@@ -296,6 +303,13 @@ static void fill_settings(void)
     snprintf(r->title, sizeof r->title, "Equalizer: %s", player_eq_names[eq_preset]);
     snprintf(r->subtitle, sizeof r->subtitle, "Runs on the Media Engine");
     r->color = eq_preset ? xmb.theme_target.accent : 0xFF475569u;
+    r = &settings_rows[2];
+    memset(r, 0, sizeof *r);
+    snprintf(r->title, sizeof r->title, "Spotify Connect");
+    snprintf(r->subtitle, sizeof r->subtitle, connect_on
+             ? "On \xC2\xB7 control this PSP from the Spotify apps"
+             : "Off \xC2\xB7 hidden from the Spotify apps");
+    r->color = connect_on ? xmb.theme_target.accent : 0xFF475569u;
     for (int k = 0; k < theme_count; ++k) {
         r = &settings_rows[k + SETTINGS_FIXED];
         memset(r, 0, sizeof *r);
@@ -316,9 +330,9 @@ static void save_settings(void)
     FILE *f = fopen(path, "w");
     if (!f) return;
     fprintf(f, "# PSPotify ME settings\ntheme = %s\ncover_colors = %s\nequalizer = %d\n"
-               "shuffle = %d\nrepeat = %d\n",
+               "shuffle = %d\nrepeat = %d\nconnect = %s\n",
             theme_active >= 0 ? theme_names[theme_active] : "", cover_colors_on ? "on" : "off",
-            eq_preset, shuffle_on, repeat_mode);
+            eq_preset, shuffle_on, repeat_mode, connect_on ? "on" : "off");
     fclose(f);
 }
 
@@ -343,6 +357,7 @@ static void load_settings(void)
             if (!strcmp(key, "theme")) copy_text(wanted, sizeof wanted, value);
             else if (!strcmp(key, "cover_colors")) cover_colors_on = strcmp(value, "off") != 0;
             else if (!strcmp(key, "equalizer")) eq_preset = atoi(value);
+            else if (!strcmp(key, "connect")) connect_on = strcmp(value, "off") != 0;
             else if (!strcmp(key, "shuffle")) shuffle_on = atoi(value) != 0;
             else if (!strcmp(key, "repeat")) repeat_mode = atoi(value);
         }
@@ -1314,6 +1329,13 @@ static int handle(const ui_event *e)
             if (search_done_seq == search_req_seq && search_shown_seq == search_done_seq)
                 play_from(found, search_done_count, e->index, -10 - (int)search_done_seq,
                           "Search", "");
+        } else if (e->category == UI_CAT_SETTINGS && e->index == 2) {
+            connect_on = !connect_on;
+            if (connect_on) connect_start(&ctx, connect_name());
+            else connect_stop();
+            log_printf("UI: Spotify Connect %s\n", connect_on ? "on" : "off");
+            fill_settings();
+            save_settings();
         } else if (e->category == UI_CAT_SETTINGS && e->index == 1) {
             eq_preset = (eq_preset + 1) % PLAYER_EQ_PRESETS;
             control.eq_preset = eq_preset;
@@ -1473,8 +1495,7 @@ int spotify_ui_run(volatile int *exit_requested)
     set_volume(80);
     log_set_buffered(1);
     load_playlists();
-    connect_start(&ctx, spotify_device_model == 0 ? "PSP-1000" : spotify_device_model == 1
-                        ? "PSP-2000" : spotify_device_model == 4 ? "PSP Go" : "PSP-3000");
+    if (connect_on) connect_start(&ctx, connect_name());
 
     memory_log("pre-player-cover-threads");
     /* Priorities: UI 0x20 > player 0x22 > download 0x24 > keepalive 0x26 >

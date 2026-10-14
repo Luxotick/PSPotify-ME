@@ -873,6 +873,7 @@ static int connect_thread(SceSize args, void *argp)
 
 void connect_start(spotify_ctx *ctx, const char *name)
 {
+    if (thread >= 0) return;
     session = ctx;
     copy_text(device_name, sizeof device_name, name, strlen(name));
     quit = 0;
@@ -890,6 +891,7 @@ void connect_stop(void)
     if (sceKernelWaitThreadEnd(thread, &timeout) < 0) sceKernelTerminateThread(thread);
     sceKernelDeleteThread(thread);
     thread = -1;
+    online = 0;
 }
 
 int connect_online(void)
