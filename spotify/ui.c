@@ -6,6 +6,7 @@
 #include "../ui/ui.h"
 #include "config.h"
 #include "http.h"
+#include "tls.h"
 #include "log.h"
 #include "memory.h"
 #include "player.h"
@@ -1146,8 +1147,12 @@ int spotify_ui_run(volatile int *exit_requested)
         if (frame_us > 20000) ++slow_frames;
         if (frame_us > worst_us) worst_us = frame_us;
         if (now - stats_start >= 10000000u) {
-            log_printf("UI: %u frames in 10 s, %u slow (>20 ms), worst %u ms\n", frames,
-                       slow_frames, worst_us / 1000u);
+            unsigned int opened, reused, full, resumed;
+            http_stats(&opened, &reused);
+            tls_stats(&full, &resumed);
+            log_printf("UI: %u frames in 10 s, %u slow (>20 ms), worst %u ms; "
+                       "connections %u new, %u reused; TLS %u full, %u resumed\n", frames,
+                       slow_frames, worst_us / 1000u, opened, reused, full, resumed);
             stats_start = now;
             frames = slow_frames = worst_us = 0;
         }

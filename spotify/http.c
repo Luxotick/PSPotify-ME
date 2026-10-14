@@ -14,6 +14,8 @@
 #define BODY_UNTIL_CLOSE UINT64_MAX
 #define MAX_REDIRECTS 5
 #define SOCK_TIMEOUT_US (15u * 1000u * 1000u)
+/* Internal: a pooled connection turned out to be closed; retry fresh. */
+#define STALE_CONNECTION (-50)
 
 typedef struct {
     int https;
@@ -37,6 +39,34 @@ static struct {
     SceInt64 at;
 } dns_cache[DNS_CACHE_SIZE];
 static unsigned int dns_next;
+
+/* Keep-alive pool: a connection whose response was read to the end waits
+ * here for the next request to the same host, which then skips the TCP
+ * connect and the TLS handshake (250 ms to 1.5 s of CPU each on the PSP). */
+#define POOL_SIZE 4
+#define POOL_IDLE_US (15ll * 1000 * 1000)
+static struct {
+    char host[64];
+    unsigned short port;
+    int https;
+    int sock;
+    struct tls_conn *tls;
+    SceInt64 since;
+} pool[POOL_SIZE];
+static SceUID pool_lock = -1;
+static unsigned int stat_opened, stat_reused;
+
+void http_stats(unsigned int *opened, unsigned int *reused)
+{
+    *opened = stat_opened;
+    *reused = stat_reused;
+}
+
+static void close_transport(int sock, struct tls_conn *tls)
+{
+    if (tls) tls_close(tls);
+    if (sock >= 0) sceNetInetClose(sock);
+}
 
 int net_resolve(const char *host, struct in_addr *out)
 {
@@ -70,6 +100,8 @@ int net_resolve(const char *host, struct in_addr *out)
 
 int http_init(void)
 {
+    for (int i = 0; i < POOL_SIZE; ++i) pool[i].sock = -1;
+    if (pool_lock < 0) pool_lock = sceKernelCreateSema("http_pool", 0, 1, 1, NULL);
     if (dns_lock < 0) dns_lock = sceKernelCreateSema("dns", 0, 1, 1, NULL);
     SceInt64 t0 = sceKernelGetSystemTimeWide();
     tls_seed_entropy();
@@ -202,29 +234,94 @@ static int has_header(const char *headers, const char *name)
     return 0;
 }
 
+/* Takes an idle connection to the same host:port from the pool, dropping
+ * ones idle too long. Returns 1 with *sock and *tls set. */
+static int pool_take(const url_parts *u, int *sock, struct tls_conn **tls)
+{
+    if (pool_lock < 0) return 0;
+    const SceInt64 now = sceKernelGetSystemTimeWide();
+    int found = 0;
+    sceKernelWaitSema(pool_lock, 1, NULL);
+    for (int i = 0; i < POOL_SIZE; ++i) {
+        if (pool[i].sock < 0) continue;
+        if (now - pool[i].since > POOL_IDLE_US) {
+            close_transport(pool[i].sock, pool[i].tls);
+            pool[i].sock = -1;
+            pool[i].tls = NULL;
+        } else if (!found && pool[i].port == u->port && pool[i].https == u->https &&
+                   strcmp(pool[i].host, u->host) == 0) {
+            *sock = pool[i].sock;
+            *tls = pool[i].tls;
+            pool[i].sock = -1;
+            pool[i].tls = NULL;
+            found = 1;
+        }
+    }
+    sceKernelSignalSema(pool_lock, 1);
+    return found;
+}
+
+static void pool_put(http_stream *s)
+{
+    sceKernelWaitSema(pool_lock, 1, NULL);
+    int slot = 0;
+    for (int i = 0; i < POOL_SIZE; ++i) {
+        if (pool[i].sock < 0) {
+            slot = i;
+            break;
+        }
+        if (pool[i].since < pool[slot].since) slot = i;
+    }
+    if (pool[slot].sock >= 0) close_transport(pool[slot].sock, pool[slot].tls);
+    memcpy(pool[slot].host, s->host, sizeof pool[slot].host);
+    pool[slot].port = s->port;
+    pool[slot].https = s->https;
+    pool[slot].sock = s->sock;
+    pool[slot].tls = s->tls;
+    pool[slot].since = sceKernelGetSystemTimeWide();
+    sceKernelSignalSema(pool_lock, 1);
+}
+
 void http_stream_close(http_stream *s)
 {
-    if (s->tls) tls_close(s->tls);
-    if (s->sock >= 0) sceNetInetClose(s->sock);
+    /* Reusable only after the whole body, with nothing extra buffered. */
+    const int done = s->body_done || (s->length_known && !s->chunked && s->remaining == 0);
+    if (s->keep && done && s->buf_pos == s->buf_len && s->sock >= 0 && s->host[0] &&
+        pool_lock >= 0)
+        pool_put(s);
+    else
+        close_transport(s->sock, s->tls);
     s->tls = NULL;
     s->sock = -1;
+    s->keep = 0;
 }
 
 static int open_once(http_stream *s, const char *method, const url_parts *u,
                      const char *extra_headers, const void *body, size_t body_len,
-                     uint64_t *content_length, char *location, size_t location_cap)
+                     uint64_t *content_length, char *location, size_t location_cap,
+                     int may_reuse)
 {
     memset(s, 0, sizeof *s);
     s->sock = -1;
     location[0] = '\0';
     *content_length = 0; /* Each redirect has independent body framing. */
 
-    s->sock = tcp_connect(u->host, u->port);
-    if (s->sock < 0) return s->sock;
-    if (u->https) {
-        s->tls = tls_open(s->sock, u->host);
-        if (!s->tls) return -3;
+    const int reused = may_reuse && pool_take(u, &s->sock, &s->tls);
+    if (reused) {
+        ++stat_reused;
+    } else {
+        s->sock = tcp_connect(u->host, u->port);
+        if (s->sock < 0) return s->sock;
+        if (u->https) {
+            s->tls = tls_open(s->sock, u->host);
+            if (!s->tls) return -3;
+        }
+        ++stat_opened;
     }
+    if (strlen(u->host) < sizeof s->host) memcpy(s->host, u->host, strlen(u->host) + 1);
+    s->port = u->port;
+    s->https = (unsigned char)u->https;
+    s->keep = 1;
 
     /* Only add a default Accept when the caller has none: with two Accept
      * headers clienttoken.spotify.com answers 200 with an empty body. */
@@ -236,7 +333,7 @@ static int open_once(http_stream *s, const char *method, const url_parts *u,
                      "User-Agent: PSP-Spotify/1.0\r\n"
                      "%s"
                      "Accept-Encoding: identity\r\n"
-                     "Connection: close\r\n",
+                     "Connection: keep-alive\r\n",
                      method, u->path, u->host, default_accept);
     if (n < 0 || (size_t)n >= sizeof req) return -4;
     size_t used = (size_t)n;
@@ -250,13 +347,17 @@ static int open_once(http_stream *s, const char *method, const url_parts *u,
     if (n < 0 || (size_t)n >= sizeof req - used) return -4;
     used += (size_t)n;
 
+    /* A pooled connection the server has meanwhile closed fails here, before
+     * any response: the caller retries on a fresh one. */
     if (transport_send_all(s, req, used) < 0 || transport_send_all(s, body, body_len) < 0) {
+        if (reused) return STALE_CONNECTION;
         log_printf("HTTP: send failed\n");
         return -5;
     }
 
     char line[1024];
     if (read_line(s, line, sizeof line) < 0) {
+        if (reused) return STALE_CONNECTION;
         log_printf("HTTP: no status line\n");
         return -6;
     }
@@ -292,6 +393,8 @@ static int open_once(http_stream *s, const char *method, const url_parts *u,
                 return -9;
             }
             s->chunked = 1;
+        } else if (strncasecmp(line, "Connection:", 11) == 0) {
+            if (strstr(line + 11, "close") || strstr(line + 11, "Close")) s->keep = 0;
         } else if (strncasecmp(line, "Location:", 9) == 0) {
             const char *v = line + 9;
             while (*v == ' ' || *v == '\t') ++v;
@@ -312,6 +415,7 @@ static int open_once(http_stream *s, const char *method, const url_parts *u,
         s->remaining = *content_length;
     } else {
         s->remaining = BODY_UNTIL_CLOSE;
+        s->keep = 0;
     }
     return status;
 }
@@ -332,7 +436,13 @@ int http_stream_open_ex(http_stream *s, const char *method, const char *url,
 
     for (int hop = 0; hop <= MAX_REDIRECTS; ++hop) {
         int status = open_once(s, method, &u, extra_headers, body, body_len,
-                               content_length, location, sizeof location);
+                               content_length, location, sizeof location, 1);
+        if (status == STALE_CONNECTION) {
+            s->keep = 0;
+            http_stream_close(s);
+            status = open_once(s, method, &u, extra_headers, body, body_len,
+                               content_length, location, sizeof location, 0);
+        }
         if (status < 0) {
             http_stream_close(s);
             return status;
@@ -376,6 +486,11 @@ int http_stream_read(http_stream *s, void *out, unsigned int len)
         s->chunk_started = 1;
         s->remaining = strtoull(line, NULL, 16);
         if (s->remaining == 0) {
+            /* Skip the trailer up to its blank line, so a kept connection
+             * starts the next response cleanly. */
+            int n;
+            while ((n = read_line(s, line, sizeof line)) > 0) {}
+            if (n < 0) s->keep = 0;
             s->body_done = 1;
             return 0;
         }

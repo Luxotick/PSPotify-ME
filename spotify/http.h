@@ -21,6 +21,12 @@ typedef struct {
     /* Bytes already pulled from the transport but not yet returned */
     unsigned char buf[2048];
     size_t buf_pos, buf_len;
+    /* Keep-alive: where the connection goes, and whether the server lets
+     * it carry another request once this body has been read to the end. */
+    char host[64];
+    unsigned short port;
+    unsigned char https;
+    unsigned char keep;
 } http_stream;
 
 struct in_addr;
@@ -42,6 +48,10 @@ int http_stream_open_ex(http_stream *s, const char *method, const char *url,
 int http_stream_open(http_stream *s, const char *url, uint64_t *content_length);
 /* Returns bytes read, 0 at end of body, or < 0 on error. */
 int http_stream_read(http_stream *s, void *buf, unsigned int len);
+/* Closes the stream. A connection whose body was read to the end is kept
+ * for a few seconds and reused by the next request to the same host. */
 void http_stream_close(http_stream *s);
+/* Connections opened and reused since start, for the log. */
+void http_stats(unsigned int *opened, unsigned int *reused);
 
 #endif /* SPOTIFY_HTTP_H */

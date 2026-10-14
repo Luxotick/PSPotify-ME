@@ -18,5 +18,7 @@ int tls_write_all(tls_conn *c, const void *buf, size_t len);
 int tls_read(tls_conn *c, void *buf, size_t len);
 /* Sends close_notify (best effort) and frees the context. */
 void tls_close(tls_conn *c);
+/* Full and resumed handshakes since start, for the log. */
+void tls_stats(unsigned int *full, unsigned int *resumed);
 
 #endif /* SPOTIFY_TLS_H */

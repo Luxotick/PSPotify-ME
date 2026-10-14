@@ -25,6 +25,22 @@ static uint32_t entropy_counter;
 static int entropy_ready;
 static SceUID seed_lock = -1;
 
+/* Session resumption: the last session with each host. Offering it lets the
+ * server skip the key exchange and certificate check, which is where the
+ * handshake's CPU time goes. */
+#define SESSION_CACHE 8
+static struct {
+    char host[64];
+    br_ssl_session_parameters params;
+} sessions[SESSION_CACHE];
+static unsigned int session_next, stat_full, stat_resumed;
+
+void tls_stats(unsigned int *full, unsigned int *resumed)
+{
+    *full = stat_full;
+    *resumed = stat_resumed;
+}
+
 void tls_seed_entropy(void)
 {
     br_sha256_context h;
@@ -107,14 +123,25 @@ tls_conn *tls_open(int sock, const char *host)
     connection_seed(seed);
     br_ssl_engine_inject_entropy(&c->sc.eng, seed, sizeof seed);
 
-    if (!br_ssl_client_reset(&c->sc, host, 0)) {
+    int resume = 0;
+    br_ssl_session_parameters offered;
+    if (seed_lock >= 0) sceKernelWaitSema(seed_lock, 1, NULL);
+    for (int i = 0; i < SESSION_CACHE; ++i)
+        if (sessions[i].host[0] && strcmp(sessions[i].host, host) == 0) {
+            offered = sessions[i].params;
+            resume = 1;
+        }
+    if (seed_lock >= 0) sceKernelSignalSema(seed_lock, 1);
+    if (resume) br_ssl_engine_set_session_parameters(&c->sc.eng, &offered);
+
+    if (!br_ssl_client_reset(&c->sc, host, resume)) {
         log_printf("TLS: reset failed (err %d)\n", br_ssl_engine_last_error(&c->sc.eng));
         free(c);
         return NULL;
     }
     br_sslio_init(&c->io, &c->sc.eng, sock_read, &c->sock, sock_write, &c->sock);
 
-    log_printf("TLS: handshake with %s...\n", host);
+    if (!resume) log_printf("TLS: handshake with %s...\n", host);
     /* Drive the handshake now so failures are reported here. */
     SceInt64 t0 = sceKernelGetSystemTimeWide();
     if (br_sslio_flush(&c->io) < 0 ||
@@ -126,9 +153,30 @@ tls_conn *tls_open(int sock, const char *host)
         free(c);
         return NULL;
     }
-    log_printf("TLS: %s ok, suite 0x%04X, %u ms\n", host,
-               (unsigned int)c->sc.eng.session.cipher_suite,
-               (unsigned int)((sceKernelGetSystemTimeWide() - t0) / 1000));
+    br_ssl_session_parameters now;
+    br_ssl_engine_get_session_parameters(&c->sc.eng, &now);
+    const int resumed = resume && now.session_id_len > 0 &&
+                        now.session_id_len == offered.session_id_len &&
+                        memcmp(now.session_id, offered.session_id, now.session_id_len) == 0;
+    if (resumed) {
+        ++stat_resumed;
+    } else {
+        ++stat_full;
+        log_printf("TLS: %s ok, suite 0x%04X, %u ms\n", host,
+                   (unsigned int)c->sc.eng.session.cipher_suite,
+                   (unsigned int)((sceKernelGetSystemTimeWide() - t0) / 1000));
+    }
+    /* Remember the session for the next connection to this host. */
+    if (now.session_id_len > 0 && strlen(host) < sizeof sessions[0].host) {
+        if (seed_lock >= 0) sceKernelWaitSema(seed_lock, 1, NULL);
+        int slot = -1;
+        for (int i = 0; i < SESSION_CACHE && slot < 0; ++i)
+            if (strcmp(sessions[i].host, host) == 0) slot = i;
+        if (slot < 0) slot = (int)(session_next++ % SESSION_CACHE);
+        memcpy(sessions[slot].host, host, strlen(host) + 1);
+        sessions[slot].params = now;
+        if (seed_lock >= 0) sceKernelSignalSema(seed_lock, 1);
+    }
     return c;
 }
 
