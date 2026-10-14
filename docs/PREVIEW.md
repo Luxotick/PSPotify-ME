@@ -32,6 +32,7 @@ Options:
 
 - `--theme Daylight`: start with `themes/Daylight/theme.ini`.
 - `--play`: start with a song playing.
+- `--no-cover-colors`: start with Cover colors off.
 - `--scale 3`: a bigger window.
 - `--shot out.png --keys right,down,cross`: press those buttons, then save a 480×272 screenshot and exit.
 
@@ -49,3 +50,5 @@ accent = #1ED760
 ```
 
 The preview reloads the active theme as soon as you save the file. Pick another theme under Settings. A missing or malformed line keeps the default color.
+
+**Cover colors** (Settings, on by default) tints the theme with the dominant color of the playing track's album art. A dark theme stays dark and a light one light; only the hue changes, so text stays readable. The preview's covers are generated stand-ins; on the PSP it will use the real album art.

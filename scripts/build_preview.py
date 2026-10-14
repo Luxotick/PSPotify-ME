@@ -86,7 +86,7 @@ def vcvars():
 
 
 SOURCES = ["tools/preview/main.c", "tools/preview/render_sdl.c",
-           "ui/xmb.c", "ui/font.c", "ui/theme.c", "ui/draw.c"]
+           "ui/xmb.c", "ui/font.c", "ui/theme.c", "ui/draw.c", "ui/palette.c"]
 
 
 def build_windows():

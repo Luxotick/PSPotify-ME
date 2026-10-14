@@ -21,6 +21,7 @@
 #include <dirent.h>
 #endif
 #include "font.h"
+#include "palette.h"
 #include "render_sdl.h"
 #include "ui.h"
 
@@ -79,7 +80,61 @@ static int load_font(font_face face, const char *name)
 static char theme_names[MAX_THEMES][64];
 static int theme_count, theme_active = -1;
 static long long theme_mtime;
-static ui_row theme_rows[MAX_THEMES];
+/* Settings: row 0 is the "Cover colors" switch, then one row per theme. */
+static ui_row settings_rows[MAX_THEMES + 1];
+static ui_theme base_theme;
+static int cover_colors = 1;
+static cover_palette playing_palette;
+static int have_palette;
+
+/* The theme the UI should show: the chosen one, tinted by the playing
+ * track's cover when "Cover colors" is on. */
+static void retint(ui_state *ui, int instant)
+{
+    ui_theme target = base_theme;
+    if (cover_colors && have_palette) theme_tint(&base_theme, &playing_palette, &target);
+    ui->theme_target = target;
+    if (instant) ui->theme = target;
+}
+
+static void theme_path(int i, char *out, size_t cap);
+
+/* A theme's accent, for its swatch in Settings. */
+static uint32_t theme_swatch(int i)
+{
+    char path[1300];
+    theme_path(i, path, sizeof path);
+    size_t len;
+    char *text = (char *)read_file(path, &len);
+    ui_theme t;
+    theme_defaults(&t);
+    if (text) {
+        theme_parse(&t, text, len);
+        free(text);
+    }
+    return t.accent;
+}
+
+static void fill_settings(ui_state *ui)
+{
+    ui_row *r = &settings_rows[0];
+    memset(r, 0, sizeof *r);
+    snprintf(r->title, sizeof r->title, "Cover colors");
+    snprintf(r->subtitle, sizeof r->subtitle, cover_colors
+             ? "On \xC2\xB7 the theme follows the album art"
+             : "Off \xC2\xB7 the theme keeps its own colors");
+    r->color = cover_colors ? ui->theme_target.accent : 0xFF475569u;
+    for (int k = 0; k < theme_count; ++k) {
+        r = &settings_rows[k + 1];
+        memset(r, 0, sizeof *r);
+        snprintf(r->title, sizeof r->title, "%s", theme_names[k]);
+        snprintf(r->subtitle, sizeof r->subtitle, k == theme_active ? "Theme \xC2\xB7 active" : "Theme");
+        r->color = theme_swatch(k);
+        r->playing = k == theme_active;
+    }
+    ui->lists[UI_CAT_SETTINGS][0].rows = settings_rows;
+    ui->lists[UI_CAT_SETTINGS][0].count = theme_count + 1;
+}
 
 static void theme_path(int i, char *out, size_t cap)
 {
@@ -120,15 +175,15 @@ static void scan_themes(void)
         }
 }
 
-static void apply_theme(ui_state *ui, int i)
+static void apply_theme(ui_state *ui, int i, int instant)
 {
     char path[1300];
     theme_path(i, path, sizeof path);
     size_t len;
     char *text = (char *)read_file(path, &len);
-    theme_defaults(&ui->theme);
+    theme_defaults(&base_theme);
     if (text) {
-        int ignored = theme_parse(&ui->theme, text, len);
+        int ignored = theme_parse(&base_theme, text, len);
         if (ignored) printf("theme %s: %d line(s) ignored\n", theme_names[i], ignored);
         free(text);
     } else {
@@ -136,16 +191,8 @@ static void apply_theme(ui_state *ui, int i)
     }
     theme_active = i;
     theme_mtime = mtime(path);
-    for (int k = 0; k < theme_count; ++k) {
-        ui_row *r = &theme_rows[k];
-        memset(r, 0, sizeof *r);
-        snprintf(r->title, sizeof r->title, "%s", theme_names[k]);
-        snprintf(r->subtitle, sizeof r->subtitle, k == i ? "Theme \xC2\xB7 active" : "Theme");
-        r->color = 0xFF475569u;
-        r->playing = k == i;
-    }
-    ui->lists[UI_CAT_SETTINGS][0].rows = theme_rows;
-    ui->lists[UI_CAT_SETTINGS][0].count = theme_count;
+    retint(ui, instant);
+    fill_settings(ui);
 }
 
 /* ------------------------------------------------------------ mock library */
@@ -178,6 +225,37 @@ static const struct { const char *name; uint32_t color; } PLAYLISTS[] = {
 };
 #define PLAYLIST_COUNT ((int)(sizeof PLAYLISTS / sizeof PLAYLISTS[0]))
 
+/* Stand-in album art: two tones of the track's color and a light disc, so
+ * the cover-color code sees a picture rather than a flat fill. */
+#define COVER 64
+static uint32_t cover_px[TRACK_COUNT][COVER * COVER];
+static r_tex *covers[TRACK_COUNT];
+
+static uint32_t shade(uint32_t c, float f)
+{
+    uint32_t out = 0xFF000000u;
+    for (int shift = 0; shift < 24; shift += 8) {
+        float v = (float)((c >> shift) & 0xFF) * f;
+        out |= (uint32_t)(v > 255 ? 255 : v) << shift;
+    }
+    return out;
+}
+
+static void make_covers(void)
+{
+    for (int t = 0; t < TRACK_COUNT; ++t) {
+        uint32_t base = TRACKS[t].color, dark = shade(base, 0.45f), light = shade(base, 1.6f);
+        for (int y = 0; y < COVER; ++y)
+            for (int x = 0; x < COVER; ++x) {
+                int dx = x - 40, dy = y - 24;
+                uint32_t c = x + y < COVER + (t * 7) % 24 ? base : dark;
+                if (dx * dx + dy * dy < 13 * 13) c = light;
+                cover_px[t][y * COVER + x] = c;
+            }
+        covers[t] = r_tex_create(COVER, COVER, cover_px[t], 1);
+    }
+}
+
 static ui_row liked_rows[TRACK_COUNT], playlist_rows[PLAYLIST_COUNT], open_rows[TRACK_COUNT];
 static ui_row search_rows[8];
 static int open_map[TRACK_COUNT], search_map[8], search_kind[8];
@@ -192,6 +270,7 @@ static void track_row(ui_row *r, int t)
     snprintf(r->title, sizeof r->title, "%s", TRACKS[t].title);
     snprintf(r->subtitle, sizeof r->subtitle, "%s", TRACKS[t].artist);
     r->color = TRACKS[t].color;
+    r->cover = covers[t];
 }
 
 static void fill_library(ui_state *ui)
@@ -250,6 +329,11 @@ static void play_at(ui_state *ui, int pos)
     n->dur_ms = t->ms;
     n->pos_ms = 0;
     n->color = t->color;
+    n->cover = covers[queue[pos]];
+    palette_extract(cover_px[queue[pos]], COVER * COVER, &playing_palette);
+    have_palette = 1;
+    retint(ui, 0);
+    fill_settings(ui);
     mark_playing(ui);
 }
 
@@ -313,8 +397,12 @@ static int handle(ui_state *ui, const ui_event *e)
             play_list(ui, all, TRACK_COUNT, e->index);
         } else if (e->category == UI_CAT_SEARCH && search_kind[e->index] == 0) {
             play_list(ui, &search_map[e->index], 1, 0);
+        } else if (e->category == UI_CAT_SETTINGS && e->index == 0) {
+            cover_colors = !cover_colors;
+            retint(ui, 0);
+            fill_settings(ui);
         } else if (e->category == UI_CAT_SETTINGS) {
-            apply_theme(ui, e->index);
+            apply_theme(ui, e->index - 1, 0);
         }
         break;
     case UI_EV_PAUSE:
@@ -422,8 +510,9 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--root") && i + 1 < argc) root_arg = argv[++i];
         else if (!strcmp(argv[i], "--scale") && i + 1 < argc) scale = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--play")) play = 1;
+        else if (!strcmp(argv[i], "--no-cover-colors")) cover_colors = 0;
         else {
-            fprintf(stderr, "usage: %s [--theme NAME] [--scale N] [--play] [--shot FILE --keys a,b]\n",
+            fprintf(stderr, "usage: %s [--theme NAME] [--scale N] [--play] [--no-cover-colors] [--shot FILE --keys a,b]\n",
                     argv[0]);
             return 2;
         }
@@ -463,7 +552,8 @@ int main(int argc, char **argv)
     int start_theme = 0;
     for (int i = 0; i < theme_count; ++i)
         if (!strcmp(theme_names[i], theme)) start_theme = i;
-    if (theme_count) apply_theme(&ui, start_theme);
+    make_covers();
+    if (theme_count) apply_theme(&ui, start_theme, 1);
     fill_library(&ui);
     if (play) {
         int all[TRACK_COUNT];
@@ -515,7 +605,7 @@ int main(int argc, char **argv)
             theme_path(theme_active, path, sizeof path);
             if (mtime(path) != theme_mtime) {
                 printf("theme %s changed, reloading\n", theme_names[theme_active]);
-                apply_theme(&ui, theme_active);
+                apply_theme(&ui, theme_active, 0);
             }
         }
 

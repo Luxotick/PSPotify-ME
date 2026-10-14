@@ -54,10 +54,25 @@ static void emit(ui_state *ui, ui_event_type type, int value)
     e->value = value;
 }
 
+/* One easing step per channel; always moves at least one unit so the
+ * color reaches its target instead of stalling just short of it. */
+static uint32_t ease_color(uint32_t from, uint32_t to, float t)
+{
+    uint32_t out = 0;
+    for (int shift = 0; shift < 32; shift += 8) {
+        int a = (int)((from >> shift) & 0xFF), d = (int)((to >> shift) & 0xFF) - a;
+        int step = (int)((float)d * t);
+        if (step == 0 && d != 0) step = d > 0 ? 1 : -1;
+        out |= (uint32_t)(a + step) << shift;
+    }
+    return out;
+}
+
 int ui_init(ui_state *ui)
 {
     memset(ui, 0, sizeof *ui);
     theme_defaults(&ui->theme);
+    ui->theme_target = ui->theme;
     ui->volume = 80;
     ui->cat = UI_CAT_PLAYLISTS;
     ui->cat_pos = (float)ui->cat;
@@ -136,6 +151,15 @@ void ui_update(ui_state *ui, unsigned buttons, float dt)
     if ((act & UI_BTN_RIGHT) && ui->cat < UI_CATS - 1) ++ui->cat;
 
     ui->cat_pos = approach(ui->cat_pos, (float)ui->cat, 14.0f, dt);
+    const float fade = 1.0f - expf(-6.0f * dt);
+    ui_theme *th = &ui->theme;
+    const ui_theme *to = &ui->theme_target;
+    memcpy(th->name, to->name, sizeof th->name);
+    th->bg = ease_color(th->bg, to->bg, fade);
+    th->surface = ease_color(th->surface, to->surface, fade);
+    th->text = ease_color(th->text, to->text, fade);
+    th->dim = ease_color(th->dim, to->dim, fade);
+    th->accent = ease_color(th->accent, to->accent, fade);
     for (int c = 0; c < UI_CATS; ++c) {
         ui->level_pos[c] = approach(ui->level_pos[c], (float)ui->level[c], 14.0f, dt);
         for (int l = 0; l < 2; ++l)

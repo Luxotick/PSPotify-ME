@@ -77,7 +77,9 @@ typedef struct ui_event {
 #define UI_MAX_EVENTS 8
 
 typedef struct ui_state {
-    ui_theme theme;
+    /* The host sets theme_target; theme eases towards it, so a theme or
+     * cover-color change fades instead of jumping. Set both to switch at once. */
+    ui_theme theme, theme_target;
     /* Level 0 is the category's own list; level 1 an opened item
      * (a playlist's tracks). The host fills both. */
     ui_list lists[UI_CATS][2];
