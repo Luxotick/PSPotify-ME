@@ -29,6 +29,7 @@ static SceUID seed_lock = -1;
  * server skip the key exchange and certificate check, which is where the
  * handshake's CPU time goes. */
 #define SESSION_CACHE 8
+#define TLS_RESUME 0
 static struct {
     char host[64];
     br_ssl_session_parameters params;
@@ -125,13 +126,19 @@ tls_conn *tls_open(int sock, const char *host)
 
     int resume = 0;
     br_ssl_session_parameters offered;
-    if (seed_lock >= 0) sceKernelWaitSema(seed_lock, 1, NULL);
-    for (int i = 0; i < SESSION_CACHE; ++i)
-        if (sessions[i].host[0] && strcmp(sessions[i].host, host) == 0) {
-            offered = sessions[i].params;
-            resume = 1;
-        }
-    if (seed_lock >= 0) sceKernelSignalSema(seed_lock, 1);
+    memset(&offered, 0, sizeof offered);
+    /* Off: on hardware every CDN download over a resumed session crawled at
+     * about the playback rate (17 KB/s, the audio kept stalling) while full
+     * handshakes downloaded fast, and servers resumed only 3 sessions in 13. */
+    if (TLS_RESUME && seed_lock >= 0) {
+        sceKernelWaitSema(seed_lock, 1, NULL);
+        for (int i = 0; i < SESSION_CACHE; ++i)
+            if (sessions[i].host[0] && strcmp(sessions[i].host, host) == 0) {
+                offered = sessions[i].params;
+                resume = 1;
+            }
+        sceKernelSignalSema(seed_lock, 1);
+    }
     if (resume) br_ssl_engine_set_session_parameters(&c->sc.eng, &offered);
 
     if (!br_ssl_client_reset(&c->sc, host, resume)) {

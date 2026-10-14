@@ -46,12 +46,36 @@ static unsigned int last_command_id;
 
 /* ------------------------------------------------------------ helpers */
 
+/* Server time minus the PSP clock, from connect-state replies. The apps
+ * extrapolate the position from our timestamps, so a PSP clock a few
+ * seconds off made the phone's progress run ahead or behind. */
+static int64_t clock_offset_ms;
+
 static int64_t now_ms(void)
 {
     /* RTC ticks are microseconds since 0001-01-01 UTC. */
     u64 tick = 0;
     sceRtcGetCurrentTick(&tick);
-    return (int64_t)(tick / 1000u) - 62135596800000ll;
+    return (int64_t)(tick / 1000u) - 62135596800000ll + clock_offset_ms;
+}
+
+/* Cluster { server_timestamp_ms 9 } in a connect-state reply. */
+static void sync_clock(const uint8_t *cluster, size_t len, int64_t sent_ms)
+{
+    pb_reader r;
+    pb_field f;
+    pb_init(&r, cluster, len);
+    while (pb_next(&r, &f) == 1)
+        if (f.field == 9 && f.wire == 0 && f.varint > 0) {
+            /* The server stamped the reply about half a round trip ago. */
+            const int64_t now = now_ms();
+            const int64_t offset = (int64_t)f.varint - (now - (now - sent_ms) / 2);
+            if (offset > 1000 || offset < -1000) {
+                clock_offset_ms += offset;
+                log_printf("CONNECT: PSP clock corrected by %d ms\n", (int)offset);
+            }
+            return;
+        }
 }
 
 static unsigned int next_random(void)
@@ -378,16 +402,18 @@ static size_t build_state(uint8_t *out, size_t cap, int reason, const connect_st
  * PLAYER_STATE_CHANGED. Returns the HTTP status. */
 static int put_state(int reason)
 {
-    static uint8_t body[4096], cluster[512];
+    static uint8_t body[4096], cluster[65536];
     connect_status s = status_now;
     if (s.active && !status_sent.active) started_playing_at = now_ms();
     size_t len = build_state(body, sizeof body, reason, &s);
     if (!len) return -1;
     size_t reply_len = 0;
+    const int64_t sent = now_ms();
     int st = spotify_sp_put_state(session->client_token, session->access_token,
                                   SPOTIFY_DEVICE_ID, connection_id, body, len, cluster,
                                   sizeof cluster, &reply_len);
     if (st == 200) {
+        sync_clock(cluster, reply_len, sent);
         status_sent = s;
         sent_at_ms = now_ms();
     } else {
