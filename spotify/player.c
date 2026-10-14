@@ -228,7 +228,9 @@ int spotify_play_ogg(const char *urls, unsigned int url_stride, int url_count,
      * starved at 0x30 (255 KB in the first 10 s, 44 decoder waits). It sleeps
      * in recv most of the time, so a higher priority costs nothing. */
     memory_log("pre-fetch-thread");
-    SceUID thid = sceKernelCreateThread("ogg_fetch", fetch_thread, 0x18, 0x10000, 0, NULL);
+    /* Below the UI thread (0x20): the download runs well ahead of playback,
+     * and at a higher priority its TLS and AES work made the UI stutter. */
+    SceUID thid = sceKernelCreateThread("ogg_fetch", fetch_thread, 0x24, 0x10000, 0, NULL);
     if (thid < 0 || sceKernelStartThread(thid, sizeof fp, &fp) < 0) {
         log_printf("PLAYER: fetch thread failed 0x%08X\n", (unsigned int)thid);
         if (thid >= 0) sceKernelDeleteThread(thid);

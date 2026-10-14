@@ -68,6 +68,7 @@ typedef struct {
     char id[24];          /* base62; empty = the user's Liked Songs */
     char name[96];        /* UTF-8 */
     int total;
+    char image[160];      /* cover image URL, small size preferred; may be empty */
 } spotify_playlist;
 
 typedef struct {
@@ -77,6 +78,8 @@ typedef struct {
     unsigned int duration_ms;
     uint8_t cover[20];    /* album cover image file id (i.scdn.co/image/<hex>) */
     uint8_t has_cover;
+    uint8_t thumb[20];    /* the same cover at 64x64, for list rows */
+    uint8_t has_thumb;
 } spotify_track;
 
 /* The user's playlists (rootlist, folders flattened). */

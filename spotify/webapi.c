@@ -646,6 +646,39 @@ static int sp_get(const char *url, size_t *len)
     return status;
 }
 
+/* ListAttributes { picture = 3 (image id), picture_size = 13 { target_name = 1,
+ * url = 2 } }. picture_size also covers the generated mosaic covers; its
+ * "small" entry is the right size for a list row. */
+static void parse_playlist_picture(const uint8_t *attrs, size_t len, spotify_playlist *p)
+{
+    pb_reader r;
+    pb_field f;
+    int best = 0;
+    p->image[0] = '\0';
+    pb_init(&r, attrs, len);
+    while (pb_next(&r, &f) == 1) {
+        if (f.field == 3 && f.wire == 2 && f.len == 20 && best < 1) {
+            int n = snprintf(p->image, sizeof p->image, "https://i.scdn.co/image/");
+            for (size_t i = 0; i < 20 && n > 0 && (size_t)n + 3 < sizeof p->image; ++i)
+                n += snprintf(p->image + n, sizeof p->image - (size_t)n, "%02x", f.data[i]);
+            best = 1;
+        } else if (f.field == 13 && f.wire == 2) {
+            const uint8_t *target = NULL, *url = NULL;
+            size_t target_len = 0, url_len = 0;
+            pb_find_bytes(f.data, f.len, 1, &target, &target_len);
+            if (pb_find_bytes(f.data, f.len, 2, &url, &url_len) < 0 || url_len == 0 ||
+                url_len >= sizeof p->image || url_len < 8 || memcmp(url, "https://", 8) != 0)
+                continue;
+            int rank = target && target_len == 5 && memcmp(target, "small", 5) == 0 ? 4
+                     : target && target_len == 7 && memcmp(target, "default", 7) == 0 ? 3 : 2;
+            if (rank > best) {
+                copy_str(p->image, sizeof p->image, url, url_len);
+                best = rank;
+            }
+        }
+    }
+}
+
 static int sp_playlists_unlocked(const char *client_token, const char *access_token,
                                  const char *username, spotify_playlist *out, int max)
 {
@@ -686,7 +719,7 @@ static int sp_playlists_unlocked(const char *client_token, const char *access_to
         }
     }
     int aligned = n_metas == n_items;
-    int count = 0;
+    int count = 0, with_image = 0;
     for (int i = 0; i < n_items && count < max; ++i) {
         if (uri_lens[i] != 39 || memcmp(uris[i], "spotify:playlist:", 17) != 0)
             continue;                                  /* folder markers etc. */
@@ -694,6 +727,7 @@ static int sp_playlists_unlocked(const char *client_token, const char *access_to
         copy_str(p->id, sizeof p->id, uris[i] + 17, 22);
         snprintf(p->name, sizeof p->name, "Playlist %.8s", p->id);
         p->total = -1;
+        p->image[0] = '\0';
         if (!aligned) continue;
         pb_init(&r, metas[i], meta_lens[i]);
         while (pb_next(&r, &f) == 1) {
@@ -702,12 +736,15 @@ static int sp_playlists_unlocked(const char *client_token, const char *access_to
                 size_t name_len;
                 if (pb_find_bytes(f.data, f.len, 1, &name, &name_len) == 0)
                     copy_str(p->name, sizeof p->name, name, name_len);
+                parse_playlist_picture(f.data, f.len, p);
+                with_image += p->image[0] != '\0';
             } else if (f.field == 3 && f.wire == 0) {
                 p->total = (int)f.varint;
             }
         }
     }
-    log_printf("LIBRARY: %d playlists (%d items, %d meta)\n", count, n_items, n_metas);
+    log_printf("LIBRARY: %d playlists (%d items, %d meta, %d with a cover)\n", count, n_items,
+               n_metas, with_image);
     return count;
 }
 
@@ -833,6 +870,14 @@ static void parse_album_cover(const uint8_t *album, size_t len, spotify_track *t
             t->has_cover = 1;
             best = rank;
         }
+        if (id && size == 1) {
+            memcpy(t->thumb, id, 20);
+            t->has_thumb = 1;
+        }
+    }
+    if (!t->has_thumb && t->has_cover) {
+        memcpy(t->thumb, t->cover, 20);
+        t->has_thumb = 1;
     }
 }
 
