@@ -58,7 +58,12 @@ static ui_row playlist_rows[MAX_PLAYLISTS];
  * thread only reads a buffer after the loader marked it done. */
 static spotify_track liked[MAX_TRACKS], opened[MAX_TRACKS];
 static ui_row liked_rows[MAX_TRACKS], opened_rows[MAX_TRACKS];
-static volatile int liked_done, liked_count, liked_shown;
+/* Liked Songs load in steps so a user request never waits behind them:
+ * the ids first, then names one batch at a time; rows appear as they come.
+ * liked_ready counts the songs with names, liked_shown those turned into
+ * rows. */
+static volatile int liked_done, liked_count, liked_ready, liked_ids_loaded;
+static int liked_shown;
 static volatile unsigned open_req_seq, open_done_seq, open_shown_seq;
 static volatile int open_req_playlist, open_done_playlist, open_done_count;
 
@@ -430,7 +435,7 @@ static int load_context(int i)
     const char *uri = recent[i].uri;
     memset(ctx_tracks, 0, sizeof ctx_tracks);
     if (is_collection(uri)) {
-        int n = liked_count < MAX_CONTEXT_TRACKS ? liked_count : MAX_CONTEXT_TRACKS;
+        int n = liked_ready < MAX_CONTEXT_TRACKS ? liked_ready : MAX_CONTEXT_TRACKS;
         memcpy(ctx_tracks, liked, sizeof ctx_tracks[0] * (size_t)n);
         return n;
     }
@@ -462,13 +467,7 @@ static int loader_thread(SceSize args, void *argp)
     (void)args;
     (void)argp;
     while (!player_quit) {
-        if (!liked_done) {
-            liked_count = load_list("", liked);
-            liked_done = 1;
-            log_printf("UI: %d liked songs\n", liked_count);
-            continue;
-        }
-        if (recent_requested && !recent_done && liked_done) {
+        if (recent_requested && !recent_done) {
             load_recent();
             recent_done = 1;
             continue;
@@ -501,6 +500,27 @@ static int loader_thread(SceSize args, void *argp)
             open_done_playlist = p;
             open_done_seq = seq;
             log_printf("UI: %d tracks in playlist %d\n", open_done_count, p);
+            continue;
+        }
+        if (!liked_ids_loaded) {
+            memset(liked, 0, sizeof liked);
+            int n = spotify_sp_tracks(ctx.client_token, ctx.access_token, ctx.cfg.username, "",
+                                      liked, MAX_TRACKS);
+            liked_count = n > 0 ? n : 0;
+            liked_ids_loaded = 1;
+            if (!liked_count) liked_done = 1;
+            continue;
+        }
+        if (!liked_done) {
+            const int i = liked_ready;
+            const int batch = liked_count - i < SPOTIFY_DETAILS_BATCH ? liked_count - i
+                                                                       : SPOTIFY_DETAILS_BATCH;
+            spotify_sp_track_details(ctx.client_token, ctx.access_token, &liked[i], batch);
+            liked_ready = i + batch;
+            if (liked_ready >= liked_count) {
+                liked_done = 1;
+                log_printf("UI: %d liked songs\n", liked_count);
+            }
             continue;
         }
         sceKernelDelayThread(30000);
@@ -954,8 +974,7 @@ static void track_rows(const spotify_track *tracks, int count, ui_row *rows)
 
 static void mark_playing(const char *id)
 {
-    if (liked_shown)
-        for (int i = 0; i < liked_count; ++i) liked_rows[i].playing = id && !strcmp(liked[i].id, id);
+    for (int i = 0; i < liked_shown; ++i) liked_rows[i].playing = id && !strcmp(liked[i].id, id);
     ui_list *open_list = &xmb.lists[UI_CAT_PLAYLISTS][1];
     if (open_shown_seq == open_done_seq && open_list->count > 0)
         for (int i = 0; i < open_list->count; ++i)
@@ -973,13 +992,16 @@ static void mark_playing(const char *id)
 /* Picks up finished list loads and covers, and mirrors the player state. */
 static void sync_state(void)
 {
-    if (liked_done && !liked_shown) {
-        track_rows(liked, liked_count, liked_rows);
+    if (liked_ready > liked_shown) {
+        const int ready = liked_ready;
+        track_rows(&liked[liked_shown], ready - liked_shown, &liked_rows[liked_shown]);
         xmb.lists[UI_CAT_LIKED][0].rows = liked_rows;
-        xmb.lists[UI_CAT_LIKED][0].count = liked_count;
-        xmb.lists[UI_CAT_LIKED][0].loading = 0;
-        liked_shown = 1;
+        xmb.lists[UI_CAT_LIKED][0].count = ready;
+        liked_shown = ready;
+        const int playing = current_index;
+        if (playing >= 0 && playing < queue_len) mark_playing(queue[playing].id);
     }
+    xmb.lists[UI_CAT_LIKED][0].loading = !liked_done;
     ui_list *open_list = &xmb.lists[UI_CAT_PLAYLISTS][1];
     if (open_done_seq == open_req_seq && open_shown_seq != open_done_seq) {
         track_rows(opened, open_done_count, opened_rows);
@@ -1289,10 +1311,10 @@ static int handle(const ui_event *e)
     case UI_EV_QUIT:
         return 1;
     case UI_EV_OPEN:
-        if (e->category == UI_CAT_LIKED && liked_shown) {
+        if (e->category == UI_CAT_LIKED && liked_shown > 0) {
             static char uri[sizeof ctx.cfg.username + 32];
             snprintf(uri, sizeof uri, "spotify:user:%s:collection", ctx.cfg.username);
-            play_from(liked, liked_count, e->index, -1, "Liked Songs", uri);
+            play_from(liked, liked_shown, e->index, -1, "Liked Songs", uri);
         } else if (e->category == UI_CAT_PLAYLISTS && e->level == 0) {
             int p = e->index + 1;
             ui_list *l = &xmb.lists[UI_CAT_PLAYLISTS][1];
