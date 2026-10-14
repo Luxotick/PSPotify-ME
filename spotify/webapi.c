@@ -998,6 +998,64 @@ int spotify_sp_tracks(const char *client_token, const char *access_token,
     return r;
 }
 
+/* Search the way Spotify's clients open a search as a playback context:
+ * GET /context-resolve/v1/spotify:search:<query> returns JSON pages whose
+ * tracks carry "uri": "spotify:track:<id>". Only songs come back. */
+static int is_base62(uint8_t c)
+{
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+static int sp_search_unlocked(const char *client_token, const char *access_token,
+                              const char *query, spotify_track *out, int max)
+{
+    static char url[512];
+    if (sp_headers(client_token, access_token, "application/json") < 0) return -1;
+    int n = snprintf(url, sizeof url, SPCLIENT "/context-resolve/v1/spotify:search:");
+    for (const uint8_t *q = (const uint8_t *)query; *q && n > 0 && (size_t)n + 4 < sizeof url; ++q) {
+        if (is_base62(*q) || *q == '-' || *q == '_' || *q == '.' || *q == '~')
+            url[n++] = (char)*q;
+        else if (*q == ' ')
+            url[n++] = '+';
+        else
+            n += snprintf(url + n, sizeof url - (size_t)n, "%%%02X", *q);
+    }
+    if (n <= 0 || (size_t)n >= sizeof url) return -1;
+    url[n] = '\0';
+    size_t len = 0;
+    int status = sp_get(url, &len);
+    if (status != 200) return status < 0 ? status : -status;
+
+    static const char needle[] = "spotify:track:";
+    int count = 0;
+    for (size_t i = 0; i + 14 + 22 <= len && count < max; ++i) {
+        if (memcmp(resp_buf + i, needle, 14) != 0) continue;
+        const uint8_t *id = resp_buf + i + 14;
+        int ok = i + 36 >= len || !is_base62(id[22]);
+        for (int k = 0; k < 22 && ok; ++k) ok = is_base62(id[k]);
+        if (!ok) continue;
+        int seen = 0;
+        for (int k = 0; k < count && !seen; ++k) seen = memcmp(out[k].id, id, 22) == 0;
+        if (!seen) {
+            memcpy(out[count].id, id, 22);
+            out[count].id[22] = '\0';
+            ++count;
+        }
+        i += 35;
+    }
+    log_printf("SEARCH: %d songs (%u bytes)\n", count, (unsigned int)len);
+    return count;
+}
+
+int spotify_sp_search(const char *client_token, const char *access_token,
+                      const char *query, spotify_track *out, int max)
+{
+    lock();
+    int r = sp_search_unlocked(client_token, access_token, query, out, max);
+    unlock();
+    return r;
+}
+
 int spotify_sp_track_details(const char *client_token, const char *access_token,
                              spotify_track *tracks, int count)
 {

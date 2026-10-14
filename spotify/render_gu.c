@@ -91,12 +91,22 @@ void render_gu_begin(void)
     texturing = -1;
 }
 
-void render_gu_end(void)
+void render_gu_finish(void)
 {
     sceGuFinish();
     sceGuSync(0, 0);
+}
+
+void render_gu_present(void)
+{
     sceDisplayWaitVblankStartCB();
     sceGuSwapBuffers();
+}
+
+void render_gu_end(void)
+{
+    render_gu_finish();
+    render_gu_present();
 }
 
 void render_gu_term(void)

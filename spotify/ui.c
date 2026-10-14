@@ -17,6 +17,8 @@
 #include <pspiofilemgr.h>
 #include <psppower.h>
 #include <psprtc.h>
+#include <psputility.h>
+#include <psputility_osk.h>
 #include <pspthreadman.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,6 +59,14 @@ static ui_row liked_rows[MAX_TRACKS], opened_rows[MAX_TRACKS];
 static volatile int liked_done, liked_count, liked_shown;
 static volatile unsigned open_req_seq, open_done_seq, open_shown_seq;
 static volatile int open_req_playlist, open_done_playlist, open_done_count;
+
+/* Search results, loaded the same way. */
+#define MAX_RESULTS 50
+static spotify_track found[MAX_RESULTS];
+static ui_row found_rows[MAX_RESULTS];
+static char search_text[128];
+static volatile unsigned search_req_seq, search_done_seq, search_shown_seq;
+static volatile int search_done_count;
 
 /* ------------------------------------------------------------ playback */
 
@@ -331,6 +341,19 @@ static int loader_thread(SceSize args, void *argp)
             log_printf("UI: %d liked songs\n", liked_count);
             continue;
         }
+        unsigned search_seq = search_req_seq;
+        if (search_seq != search_done_seq) {
+            static char query[128];
+            copy_text(query, sizeof query, search_text);
+            memset(found, 0, sizeof found);
+            int n = spotify_sp_search(ctx.client_token, ctx.access_token, query, found,
+                                      MAX_RESULTS);
+            if (n < 0) n = 0;
+            if (n > 0) spotify_sp_track_details(ctx.client_token, ctx.access_token, found, n);
+            search_done_count = n;
+            search_done_seq = search_seq;
+            continue;
+        }
         unsigned seq = open_req_seq;
         if (seq != open_done_seq) {
             int p = open_req_playlist;
@@ -568,6 +591,8 @@ static void forget_texture(const r_tex *tex)
         if (liked_rows[i].cover == tex) liked_rows[i].cover = NULL;
         if (opened_rows[i].cover == tex) opened_rows[i].cover = NULL;
     }
+    for (int i = 0; i < MAX_RESULTS; ++i)
+        if (found_rows[i].cover == tex) found_rows[i].cover = NULL;
 }
 
 /* The texture for url if it is loaded; otherwise queues it. UI thread. */
@@ -673,7 +698,7 @@ static void assign_thumbs(void)
 {
     ++frame_no;
     const int cat = xmb.cat;
-    if (cat != UI_CAT_LIKED && cat != UI_CAT_PLAYLISTS) return;
+    if (cat != UI_CAT_LIKED && cat != UI_CAT_PLAYLISTS && cat != UI_CAT_SEARCH) return;
     for (int lvl = 0; lvl < 2; ++lvl) {
         ui_list *list = &xmb.lists[cat][lvl];
         if (!list->rows || list->count <= 0) continue;
@@ -688,7 +713,8 @@ static void assign_thumbs(void)
             if (cat == UI_CAT_PLAYLISTS && lvl == 0) {
                 copy_text(url, sizeof url, playlists[i + 1].image);
             } else {
-                const spotify_track *t = cat == UI_CAT_LIKED ? &liked[i] : &opened[i];
+                const spotify_track *t = cat == UI_CAT_LIKED ? &liked[i]
+                                       : cat == UI_CAT_SEARCH ? &found[i] : &opened[i];
                 if (t->has_thumb) image_url(t->thumb, url, sizeof url);
             }
             list->rows[i].cover = thumb_for(url, i > center ? i - center : center - i);
@@ -717,6 +743,10 @@ static void mark_playing(const char *id)
     if (open_shown_seq == open_done_seq && open_list->count > 0)
         for (int i = 0; i < open_list->count; ++i)
             opened_rows[i].playing = id && !strcmp(opened[i].id, id);
+    ui_list *results = &xmb.lists[UI_CAT_SEARCH][0];
+    if (search_shown_seq == search_done_seq)
+        for (int i = 0; i < results->count; ++i)
+            found_rows[i].playing = id && !strcmp(found[i].id, id);
 }
 
 /* Picks up finished list loads and covers, and mirrors the player state. */
@@ -736,6 +766,19 @@ static void sync_state(void)
         open_list->count = open_done_count;
         open_list->loading = 0;
         open_shown_seq = open_done_seq;
+    }
+
+    ui_list *results = &xmb.lists[UI_CAT_SEARCH][0];
+    if (search_done_seq == search_req_seq && search_shown_seq != search_done_seq) {
+        track_rows(found, search_done_count, found_rows);
+        results->rows = found_rows;
+        results->count = search_done_count;
+        results->loading = 0;
+        xmb.sel[UI_CAT_SEARCH][0] = 0;
+        xmb.scroll[UI_CAT_SEARCH][0] = 0;
+        search_shown_seq = search_done_seq;
+        int playing = current_index;
+        if (playing >= 0 && playing < queue_len) mark_playing(queue[playing].id);
     }
 
     static int shown_index = -2;
@@ -789,6 +832,124 @@ static void sync_state(void)
         snprintf(xmb.clock, sizeof xmb.clock, "%02d:%02d", now.hour % 24, now.minute % 60);
 }
 
+/* ------------------------------------------------------------ keyboard */
+
+static void utf8_to_utf16(const char *in, unsigned short *out, size_t cap)
+{
+    size_t n = 0;
+    const unsigned char *s = (const unsigned char *)in;
+    while (*s && n + 1 < cap) {
+        unsigned c = *s++;
+        if (c >= 0xE0 && s[0] && s[1]) {
+            c = ((c & 0x0Fu) << 12) | ((s[0] & 0x3Fu) << 6) | (s[1] & 0x3Fu);
+            s += 2;
+        } else if (c >= 0xC0 && s[0]) {
+            c = ((c & 0x1Fu) << 6) | (s[0] & 0x3Fu);
+            s += 1;
+        }
+        out[n++] = (unsigned short)c;
+    }
+    out[n] = 0;
+}
+
+static void utf16_to_utf8(const unsigned short *in, char *out, size_t cap)
+{
+    size_t n = 0;
+    for (; *in; ++in) {
+        unsigned c = *in;
+        if (c < 0x80 && n + 1 < cap) {
+            out[n++] = (char)c;
+        } else if (c < 0x800 && n + 2 < cap) {
+            out[n++] = (char)(0xC0 | (c >> 6));
+            out[n++] = (char)(0x80 | (c & 0x3F));
+        } else if (c >= 0x800 && n + 3 < cap) {
+            out[n++] = (char)(0xE0 | (c >> 12));
+            out[n++] = (char)(0x80 | ((c >> 6) & 0x3F));
+            out[n++] = (char)(0x80 | (c & 0x3F));
+        } else {
+            break;
+        }
+    }
+    out[n] = '\0';
+}
+
+/* Asks for a line of text with the system's on-screen keyboard, drawn over
+ * the UI. Returns 1 with the text in out (UTF-8) when the user entered one. */
+static int ask_text(const char *title, char *out, size_t cap)
+{
+    static unsigned short desc[64], initial[128], typed[128];
+    utf8_to_utf16(title, desc, sizeof desc / sizeof desc[0]);
+    utf8_to_utf16(out, initial, sizeof initial / sizeof initial[0]);
+    memset(typed, 0, sizeof typed);
+
+    SceUtilityOskData data;
+    memset(&data, 0, sizeof data);
+    data.language = PSP_UTILITY_OSK_LANGUAGE_DEFAULT;
+    data.lines = 1;
+    data.inputtype = PSP_UTILITY_OSK_INPUTTYPE_ALL;
+    data.desc = desc;
+    data.intext = initial;
+    data.outtextlength = sizeof typed / sizeof typed[0];
+    data.outtextlimit = 64;
+    data.outtext = typed;
+
+    SceUtilityOskParams params;
+    memset(&params, 0, sizeof params);
+    params.base.size = sizeof params;
+    sceUtilityGetSystemParamInt(PSP_SYSTEMPARAM_ID_INT_LANGUAGE, &params.base.language);
+    params.base.buttonSwap = PSP_UTILITY_ACCEPT_CROSS;
+    params.base.graphicsThread = 0x11;
+    params.base.accessThread = 0x13;
+    params.base.fontThread = 0x12;
+    params.base.soundThread = 0x10;
+    params.datacount = 1;
+    params.data = &data;
+    if (sceUtilityOskInitStart(&params) < 0) {
+        log_printf("UI: keyboard did not start\n");
+        return 0;
+    }
+    for (int done = 0, seen = 0; !done; ) {
+        sync_state();
+        render_gu_begin();
+        ui_draw(&xmb);
+        render_gu_finish();
+        int status = sceUtilityOskGetStatus();
+        if (status != PSP_UTILITY_DIALOG_NONE) seen = 1;
+        switch (status) {
+        case PSP_UTILITY_DIALOG_VISIBLE:
+            sceUtilityOskUpdate(1);
+            break;
+        case PSP_UTILITY_DIALOG_QUIT:
+            sceUtilityOskShutdownStart();
+            break;
+        case PSP_UTILITY_DIALOG_NONE:
+            done = seen;
+            break;
+        default:
+            break;
+        }
+        render_gu_present();
+    }
+    if (data.result != PSP_UTILITY_OSK_RESULT_CHANGED || !typed[0]) return 0;
+    utf16_to_utf8(typed, out, cap);
+    return out[0] != '\0';
+}
+
+static void start_search(void)
+{
+    char text[128];
+    copy_text(text, sizeof text, xmb.search_query);
+    if (!ask_text("Search Spotify", text, sizeof text)) return;
+    copy_text(xmb.search_query, sizeof xmb.search_query, text);
+    copy_text(search_text, sizeof search_text, text);
+    ui_list *results = &xmb.lists[UI_CAT_SEARCH][0];
+    results->rows = found_rows;
+    results->count = 0;
+    results->loading = 1;
+    ++search_req_seq;
+    log_printf("UI: search requested\n");
+}
+
 /* Returns 1 when the user asked to quit. */
 static int handle(const ui_event *e)
 {
@@ -813,6 +974,10 @@ static int handle(const ui_event *e)
             if (open_req_seq == open_done_seq && open_shown_seq == open_done_seq)
                 play_from(opened, open_done_count, e->index, open_done_playlist,
                           playlists[open_done_playlist].name);
+        } else if (e->category == UI_CAT_SEARCH) {
+            if (search_done_seq == search_req_seq && search_shown_seq == search_done_seq)
+                play_from(found, search_done_count, e->index, -10 - (int)search_done_seq,
+                          "Search");
         } else if (e->category == UI_CAT_SETTINGS && e->index == 0) {
             cover_colors_on = !cover_colors_on;
             retint(0);
@@ -835,6 +1000,9 @@ static int handle(const ui_event *e)
         break;
     case UI_EV_VOLUME:
         set_volume(e->value);
+        break;
+    case UI_EV_SEARCH:
+        start_search();
         break;
     default:
         break;      /* search and seeking come later */
@@ -895,7 +1063,6 @@ static int setup_ui(void)
         log_printf("UI: init failed\n");
         return -1;
     }
-    xmb.search_hint = "Search is coming in a later version";
     /* Bake every font atlas now: baking one mid-animation drops frames.
      * Transparent draws bake without drawing anything. */
     render_gu_begin();

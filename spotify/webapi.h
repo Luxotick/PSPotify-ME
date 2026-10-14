@@ -90,6 +90,10 @@ int spotify_sp_playlists(const char *client_token, const char *access_token,
 int spotify_sp_tracks(const char *client_token, const char *access_token,
                       const char *username, const char *playlist_id,
                       spotify_track *out, int max);
+/* Songs matching a search (UTF-8 query), ids only, best match first. Names
+ * are filled by spotify_sp_track_details. */
+int spotify_sp_search(const char *client_token, const char *access_token,
+                      const char *query, spotify_track *out, int max);
 /* Fills name/artist/duration for up to SPOTIFY_DETAILS_BATCH tracks. */
 #define SPOTIFY_DETAILS_BATCH 120
 int spotify_sp_track_details(const char *client_token, const char *access_token,

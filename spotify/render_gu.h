@@ -9,6 +9,10 @@ void render_gu_init(void);
 void render_gu_begin(void);
 /* Runs the list, waits for vblank and shows the frame. */
 void render_gu_end(void);
+/* render_gu_end in two halves, for system dialogs (the on-screen keyboard)
+ * that draw over the frame between them. */
+void render_gu_finish(void);
+void render_gu_present(void);
 void render_gu_term(void);
 
 #endif
