@@ -14,6 +14,7 @@ enum {
     UI_CAT_LIKED,
     UI_CAT_PLAYLISTS,
     UI_CAT_NOW,
+    UI_CAT_QUEUE,
     UI_CAT_SETTINGS,
     UI_CATS
 };
@@ -30,7 +31,8 @@ enum {
     UI_BTN_TRIANGLE = 1 << 7,
     UI_BTN_L = 1 << 8,
     UI_BTN_R = 1 << 9,
-    UI_BTN_START = 1 << 10
+    UI_BTN_START = 1 << 10,
+    UI_BTN_SELECT = 1 << 11
 };
 
 typedef struct ui_row {
@@ -47,6 +49,7 @@ typedef struct ui_list {
     ui_row *rows;       /* owned by the host */
     int count;
     int loading;
+    int movable;        /* SELECT picks a row up and ↑/↓ move it (the queue) */
 } ui_list;
 
 typedef struct ui_now {
@@ -73,6 +76,8 @@ typedef enum {
     UI_EV_OPTIONS,      /* category, level, index: △ */
     UI_EV_SHUFFLE,      /* △ on Now Playing */
     UI_EV_REPEAT,       /* ✕ on Now Playing */
+    UI_EV_MENU,         /* value: chosen menu item; category, level, index: its row */
+    UI_EV_MOVE,         /* value: -1 or +1; index: the row before it moved */
     UI_EV_QUIT
 } ui_event_type;
 
@@ -82,6 +87,14 @@ typedef struct ui_event {
 } ui_event;
 
 #define UI_MAX_EVENTS 8
+#define UI_MENU_ITEMS 6
+
+/* A small menu over the screen (△ on a row), opened by the host. */
+typedef struct ui_menu {
+    int open, count, sel;
+    int category, level, index;     /* the row it belongs to */
+    char items[UI_MENU_ITEMS][48];
+} ui_menu;
 
 typedef struct ui_state {
     /* The host sets theme_target; theme eases towards it, so a theme or
@@ -99,16 +112,24 @@ typedef struct ui_state {
     const char *search_hint;    /* shown while the query is empty */
 
     int cat;
+    ui_menu menu;
+    int moving;             /* a row of a movable list is picked up */
+    char toast[64];         /* a short note at the bottom, e.g. "Added to queue" */
+    float toast_left;
     ui_event events[UI_MAX_EVENTS];
     int event_count;
 
     /* Internal: animation and input state. */
-    float cat_pos, scroll[UI_CATS][2], level_pos[UI_CATS];
+    float cat_pos, scroll[UI_CATS][2], level_pos[UI_CATS], menu_pos;
     unsigned buttons;
     float repeat_at, lr_held, lr_seek_at;
 } ui_state;
 
 int ui_init(ui_state *ui);
+/* Opens a menu for the row the last UI_EV_OPTIONS came from. */
+void ui_menu_open(ui_state *ui, const char *const *items, int count);
+/* Shows a short note for about two seconds. */
+void ui_toast(ui_state *ui, const char *text);
 /* Opens level 1 of a category (after the host filled lists[cat][1]). */
 void ui_open_level(ui_state *ui, int cat);
 /* Reads the buttons held this frame, emits events, advances animations. */

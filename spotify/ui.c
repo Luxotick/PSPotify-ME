@@ -110,7 +110,29 @@ static volatile int last_error;    /* why the last track could not play */
 /* Play order over the queue: identity, or a shuffle that starts with the
  * track the user picked. Repeat: 0 off, 1 the queue, 2 the current track. */
 static int order[MAX_TRACKS];
+static volatile int order_len;
+/* Songs added with "Add to queue": appended to queue[] and slotted into the
+ * play order right after the playing one (after earlier additions). */
+static unsigned char queued[MAX_TRACKS];
 static int shuffle_on, repeat_mode;
+
+/* The Queue category: what plays next, in play order (queue[] indices). */
+#define QUEUE_VIEW 100
+static ui_row queue_rows[QUEUE_VIEW];
+static int queue_view[QUEUE_VIEW];
+static unsigned int queue_version, queue_shown_version = ~0u;
+static int queue_shown_current = -2;
+
+/* The song a △ menu was opened for, and what its items do. */
+enum { MENU_ADD, MENU_LIKE, MENU_UNLIKE, MENU_PLAY_NOW, MENU_REMOVE };
+static spotify_track menu_track;
+static int menu_actions[UI_MENU_ITEMS];
+static int menu_queue_row;
+
+/* Liked Songs edits run on the loader thread. */
+static volatile unsigned like_req_seq, like_done_seq, like_seen_seq;
+static spotify_track like_track;
+static volatile int like_remove, like_status;
 static unsigned int rng_state = 0x9E3779B9u;
 /* While L/R is held: the time the seek will jump to, shown on screen. */
 static int seek_preview_ms = -1, seek_steps;
@@ -489,6 +511,13 @@ static int loader_thread(SceSize args, void *argp)
             log_printf("UI: %d songs in recent context %d\n", ctx_done_count, i);
             continue;
         }
+        unsigned like_seq = like_req_seq;
+        if (like_seq != like_done_seq) {
+            like_status = spotify_sp_like(ctx.client_token, ctx.access_token, ctx.cfg.username,
+                                          like_track.id, like_remove);
+            like_done_seq = like_seq;
+            continue;
+        }
         unsigned search_seq = search_req_seq;
         if (search_seq != search_done_seq) {
             static char query[128];
@@ -550,6 +579,8 @@ static unsigned int next_random(void)
 static void build_order(int first)
 {
     const int n = queue_len;
+    order_len = n;
+    ++queue_version;
     for (int i = 0; i < n; ++i) order[i] = i;
     if (!shuffle_on || n < 2) return;
     rng_state ^= (unsigned int)sceKernelGetSystemTimeLow();
@@ -569,7 +600,7 @@ static void build_order(int first)
 
 static int order_position(int idx)
 {
-    for (int i = 0; i < queue_len; ++i)
+    for (int i = 0; i < order_len; ++i)
         if (order[i] == idx) return i;
     return -1;
 }
@@ -581,7 +612,7 @@ static int next_index(int idx, int automatic)
     if (automatic && repeat_mode == 2) return idx;
     int p = order_position(idx);
     if (p < 0) return -1;
-    if (p + 1 < queue_len) return order[p + 1];
+    if (p + 1 < order_len) return order[p + 1];
     return repeat_mode ? order[0] : -1;
 }
 
@@ -589,7 +620,44 @@ static int prev_index(int idx)
 {
     int p = order_position(idx);
     if (p > 0) return order[p - 1];
-    return repeat_mode && queue_len > 0 ? order[queue_len - 1] : idx;
+    return repeat_mode && order_len > 0 ? order[order_len - 1] : idx;
+}
+
+/* Inserts a song to play after the current one and any songs queued before
+ * it. Returns 0, or -1 when the queue is full. */
+static int queue_add(const spotify_track *t)
+{
+    const int q = queue_len;
+    if (q >= MAX_TRACKS) return -1;
+    queue[q] = *t;
+    queued[q] = 1;
+    int at = order_position(current_index) + 1;
+    while (at < order_len && queued[order[at]]) ++at;
+    memmove(&order[at + 1], &order[at], sizeof order[0] * (size_t)(order_len - at));
+    order[at] = q;
+    queue_len = q + 1;
+    order_len = order_len + 1;
+    ++queue_version;
+    return 0;
+}
+
+static void queue_remove(int row)
+{
+    const int at = order_position(current_index) + 1 + row;
+    if (row < 0 || at >= order_len) return;
+    memmove(&order[at], &order[at + 1], sizeof order[0] * (size_t)(order_len - at - 1));
+    order_len = order_len - 1;
+    ++queue_version;
+}
+
+static void queue_move(int row, int dir)
+{
+    const int at = order_position(current_index) + 1 + row;
+    if (row < 0 || at + dir <= order_position(current_index) || at + dir >= order_len) return;
+    const int t = order[at];
+    order[at] = order[at + dir];
+    order[at + dir] = t;
+    ++queue_version;
 }
 
 /* ------------------------------------------------------------ player thread */
@@ -667,6 +735,7 @@ static void play_from(const spotify_track *tracks, int count, int idx, int key, 
         while (play_state == PS_LOADING && current_index >= 0 && !me_dead)
             sceKernelDelayThread(10000);
         memcpy(queue, tracks, sizeof tracks[0] * (size_t)count);
+        memset(queued, 0, sizeof queued);
         queue_len = count;
         queue_key = key;
         copy_text(queue_name, sizeof queue_name, name);
@@ -832,6 +901,8 @@ static void forget_texture(const r_tex *tex)
         if (recent_rows[i].cover == tex) recent_rows[i].cover = NULL;
     for (int i = 0; i < MAX_CONTEXT_TRACKS; ++i)
         if (ctx_rows[i].cover == tex) ctx_rows[i].cover = NULL;
+    for (int i = 0; i < QUEUE_VIEW; ++i)
+        if (queue_rows[i].cover == tex) queue_rows[i].cover = NULL;
 }
 
 /* The texture for url if it is loaded; otherwise queues it. UI thread. */
@@ -938,7 +1009,7 @@ static void assign_thumbs(void)
     ++frame_no;
     const int cat = xmb.cat;
     if (cat != UI_CAT_LIKED && cat != UI_CAT_PLAYLISTS && cat != UI_CAT_SEARCH &&
-        cat != UI_CAT_RECENT)
+        cat != UI_CAT_RECENT && cat != UI_CAT_QUEUE)
         return;
     for (int lvl = 0; lvl < 2; ++lvl) {
         ui_list *list = &xmb.lists[cat][lvl];
@@ -958,6 +1029,9 @@ static void assign_thumbs(void)
                 if (p) copy_text(url, sizeof url, p->image);
             } else if (cat == UI_CAT_RECENT) {
                 if (ctx_tracks[i].has_thumb) image_url(ctx_tracks[i].thumb, url, sizeof url);
+            } else if (cat == UI_CAT_QUEUE) {
+                const spotify_track *t = &queue[queue_view[i]];
+                if (t->has_thumb) image_url(t->thumb, url, sizeof url);
             } else {
                 const spotify_track *t = cat == UI_CAT_LIKED ? &liked[i]
                                        : cat == UI_CAT_SEARCH ? &found[i] : &opened[i];
@@ -1100,6 +1174,28 @@ static void sync_state(void)
                   upcoming >= 0 && upcoming != idx ? queue[upcoming].name : "");
         n->shuffle = shuffle_on;
         n->repeat = repeat_mode;
+        if (queue_version != queue_shown_version || idx != queue_shown_current) {
+            queue_shown_version = queue_version;
+            queue_shown_current = idx;
+            ui_list *ql = &xmb.lists[UI_CAT_QUEUE][0];
+            int count = 0;
+            for (int at = order_position(idx) + 1; at < order_len && count < QUEUE_VIEW; ++at) {
+                const int qi = order[at];
+                queue_view[count] = qi;
+                track_rows(&queue[qi], 1, &queue_rows[count]);
+                if (queued[qi]) {
+                    char sub[96];
+                    snprintf(sub, sizeof sub, "Queued \xC2\xB7 %.80s", queue[qi].artist);
+                    copy_text(queue_rows[count].subtitle, sizeof queue_rows[count].subtitle, sub);
+                }
+                ++count;
+            }
+            snprintf(ql->header, sizeof ql->header, "Up next \xC2\xB7 %d songs", count);
+            ql->rows = queue_rows;
+            ql->count = count;
+            ql->movable = 1;
+            if (xmb.sel[UI_CAT_QUEUE][0] >= count) xmb.sel[UI_CAT_QUEUE][0] = count ? count - 1 : 0;
+        }
         n->seeking = seek_preview_ms >= 0;
         if (n->seeking) n->pos_ms = (unsigned int)seek_preview_ms;
     }
@@ -1116,6 +1212,39 @@ static void sync_state(void)
         cover_pending = 0;
     }
     n->cover = cover_tex && !strcmp(cover_tex_id, shown_id) ? cover_tex : NULL;
+
+    if (like_done_seq != like_seen_seq && like_done_seq == like_req_seq) {
+        like_seen_seq = like_done_seq;
+        if (like_status == 200) {
+            ui_toast(&xmb, like_remove ? "Removed from Liked Songs" : "Saved to Liked Songs");
+            /* Keep the list on screen in step once it is fully loaded. */
+            if (liked_done) {
+                int at = -1;
+                for (int i = 0; i < liked_shown && at < 0; ++i)
+                    if (!strcmp(liked[i].id, like_track.id)) at = i;
+                if (like_remove && at >= 0) {
+                    const size_t tail = (size_t)(liked_shown - at - 1);
+                    memmove(&liked[at], &liked[at + 1], sizeof liked[0] * tail);
+                    memmove(&liked_rows[at], &liked_rows[at + 1], sizeof liked_rows[0] * tail);
+                    liked_count = liked_count - 1;
+                    liked_ready = liked_ready - 1;
+                    --liked_shown;
+                } else if (!like_remove && at < 0 && liked_shown < MAX_TRACKS) {
+                    const size_t tail = (size_t)liked_shown;
+                    memmove(&liked[1], &liked[0], sizeof liked[0] * tail);
+                    memmove(&liked_rows[1], &liked_rows[0], sizeof liked_rows[0] * tail);
+                    liked[0] = like_track;
+                    track_rows(&liked[0], 1, &liked_rows[0]);
+                    liked_count = liked_count + 1;
+                    liked_ready = liked_ready + 1;
+                    ++liked_shown;
+                }
+                xmb.lists[UI_CAT_LIKED][0].count = liked_shown;
+            }
+        } else {
+            ui_toast(&xmb, "Couldn't update Liked Songs");
+        }
+    }
 
     upload_thumb();
     assign_thumbs();
@@ -1313,6 +1442,94 @@ static void report_connect(void)
     connect_report(&s);
 }
 
+/* ------------------------------------------------------------ △ menu */
+
+/* The song behind a row, or NULL for rows that are not songs. */
+static const spotify_track *row_track(int cat, int level, int i)
+{
+    if (i < 0) return NULL;
+    if (cat == UI_CAT_LIKED && i < liked_shown) return &liked[i];
+    if (cat == UI_CAT_PLAYLISTS && level == 1 && open_shown_seq == open_done_seq &&
+        i < open_done_count)
+        return &opened[i];
+    if (cat == UI_CAT_SEARCH && search_shown_seq == search_done_seq && i < search_done_count)
+        return &found[i];
+    if (cat == UI_CAT_RECENT && level == 1 && ctx_shown_seq == ctx_done_seq && i < ctx_done_count)
+        return &ctx_tracks[i];
+    if (cat == UI_CAT_QUEUE && i < xmb.lists[UI_CAT_QUEUE][0].count) return &queue[queue_view[i]];
+    return NULL;
+}
+
+static int is_liked(const char *id)
+{
+    for (int i = 0; i < liked_shown; ++i)
+        if (!strcmp(liked[i].id, id)) return 1;
+    return 0;
+}
+
+static void options_menu(const ui_event *e)
+{
+    const spotify_track *t = row_track(e->category, e->level, e->index);
+    if (!t) return;
+    menu_track = *t;
+    menu_queue_row = e->index;
+    const char *items[UI_MENU_ITEMS];
+    int n = 0;
+    if (e->category == UI_CAT_QUEUE) {
+        items[n] = "Play now";
+        menu_actions[n++] = MENU_PLAY_NOW;
+        items[n] = "Remove from queue";
+        menu_actions[n++] = MENU_REMOVE;
+    } else {
+        items[n] = "Add to queue";
+        menu_actions[n++] = MENU_ADD;
+    }
+    if (is_liked(t->id)) {
+        items[n] = "Remove from Liked Songs";
+        menu_actions[n++] = MENU_UNLIKE;
+    } else {
+        items[n] = "Save to Liked Songs";
+        menu_actions[n++] = MENU_LIKE;
+    }
+    ui_menu_open(&xmb, items, n);
+}
+
+static void menu_choice(const ui_event *e)
+{
+    if (e->value < 0 || e->value >= UI_MENU_ITEMS) return;
+    switch (menu_actions[e->value]) {
+    case MENU_ADD:
+        if (current_index < 0) {
+            /* Nothing playing yet: just play it. */
+            play_from(&menu_track, 1, 0, -3000 - (int)queue_version, "Queue", "");
+            ui_toast(&xmb, "Playing");
+        } else if (queue_add(&menu_track) == 0) {
+            ui_toast(&xmb, "Added to queue");
+        } else {
+            ui_toast(&xmb, "The queue is full");
+        }
+        break;
+    case MENU_LIKE:
+    case MENU_UNLIKE:
+        if (like_req_seq != like_done_seq) {
+            ui_toast(&xmb, "Still saving the last change");
+            break;
+        }
+        like_track = menu_track;
+        like_remove = menu_actions[e->value] == MENU_UNLIKE;
+        ++like_req_seq;
+        break;
+    case MENU_PLAY_NOW:
+        if (menu_queue_row < xmb.lists[UI_CAT_QUEUE][0].count)
+            start_track(queue_view[menu_queue_row]);
+        break;
+    case MENU_REMOVE:
+        queue_remove(menu_queue_row);
+        ui_toast(&xmb, "Removed from queue");
+        break;
+    }
+}
+
 /* Returns 1 when the user asked to quit. */
 static int handle(const ui_event *e)
 {
@@ -1356,6 +1573,9 @@ static int handle(const ui_event *e)
             if (ctx_req_seq == ctx_done_seq && ctx_shown_seq == ctx_done_seq)
                 play_from(ctx_tracks, ctx_done_count, e->index, -2000 - (int)ctx_done_seq,
                           recent_rows[ctx_req_index].title, recent[ctx_req_index].uri);
+        } else if (e->category == UI_CAT_QUEUE) {
+            if (e->index >= 0 && e->index < xmb.lists[UI_CAT_QUEUE][0].count)
+                start_track(queue_view[e->index]);
         } else if (e->category == UI_CAT_SEARCH) {
             if (search_done_seq == search_req_seq && search_shown_seq == search_done_seq)
                 play_from(found, search_done_count, e->index, -10 - (int)search_done_seq,
@@ -1397,6 +1617,15 @@ static int handle(const ui_event *e)
         break;
     case UI_EV_SEARCH:
         start_search();
+        break;
+    case UI_EV_OPTIONS:
+        options_menu(e);
+        break;
+    case UI_EV_MENU:
+        menu_choice(e);
+        break;
+    case UI_EV_MOVE:
+        if (e->category == UI_CAT_QUEUE) queue_move(e->index, e->value);
         break;
     case UI_EV_SHUFFLE:
         shuffle_on = !shuffle_on;
@@ -1446,6 +1675,7 @@ static unsigned read_buttons(void)
     if (pad.Buttons & PSP_CTRL_LTRIGGER) b |= UI_BTN_L;
     if (pad.Buttons & PSP_CTRL_RTRIGGER) b |= UI_BTN_R;
     if (pad.Buttons & PSP_CTRL_START) b |= UI_BTN_START;
+    if (pad.Buttons & PSP_CTRL_SELECT) b |= UI_BTN_SELECT;
     return b;
 }
 

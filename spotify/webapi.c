@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <psprtc.h>
 #include <pspthreadman.h>
 #include <pspdebug.h>
 
@@ -1189,6 +1190,37 @@ int spotify_sp_put_state(const char *client_token, const char *access_token,
         }
     }
     unlock();
+    return status;
+}
+
+/* collection2v2 WriteRequest { username 1, set 2, items 3 { uri 1,
+ * added_at 2, is_removed 3 } } to the "collection" set (Liked Songs). */
+int spotify_sp_like(const char *client_token, const char *access_token, const char *username,
+                    const char *track_id, int remove)
+{
+    uint8_t item_buf[96], body_buf[256];
+    char uri[48];
+    snprintf(uri, sizeof uri, "spotify:track:%s", track_id);
+    u64 tick = 0;
+    sceRtcGetCurrentTick(&tick);
+    const uint64_t now = tick / 1000000u - 62135596800ull;
+    buf_writer item = { item_buf, sizeof item_buf, 0 };
+    bw_put_string(&item, 1, uri);
+    bw_put_varint_field(&item, 2, now);
+    if (remove) bw_put_varint_field(&item, 3, 1);
+    buf_writer body = { body_buf, sizeof body_buf, 0 };
+    bw_put_string(&body, 1, username);
+    bw_put_string(&body, 2, "collection");
+    bw_put_bytes(&body, 3, item.buf, item.len);
+    lock();
+    int status = -1;
+    if (sp_headers(client_token, access_token, "application/vnd.collection-v2.spotify.proto") == 0) {
+        size_t len = 0;
+        status = request_all("POST", SPCLIENT "/collection/v2/write", headers, body.buf,
+                             body.len, &len);
+    }
+    unlock();
+    log_printf("LIBRARY: %s liked songs: HTTP %d\n", remove ? "remove from" : "add to", status);
     return status;
 }
 

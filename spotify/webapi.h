@@ -111,6 +111,9 @@ int spotify_sp_put_state(const char *client_token, const char *access_token,
                          const char *device_id, const char *connection_id,
                          const uint8_t *body, size_t body_len,
                          uint8_t *reply, size_t reply_cap, size_t *reply_len);
+/* Saves a song to Liked Songs, or removes it (remove = 1). HTTP status. */
+int spotify_sp_like(const char *client_token, const char *access_token, const char *username,
+                    const char *track_id, int remove);
 /* Songs matching a search (UTF-8 query), ids only, best match first. Names
  * are filled by spotify_sp_track_details. */
 int spotify_sp_search(const char *client_token, const char *access_token,

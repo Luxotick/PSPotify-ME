@@ -6,7 +6,7 @@
  *                                       press the keys, save a 480x272 PNG
  *
  * Keys: arrows = D-pad, Z/Enter = cross, X/Backspace = circle, A = square,
- * S = triangle, Q = L, E = R, Esc = START. The active theme.ini is reloaded
+ * S = triangle, Q = L, E = R, Tab = SELECT, Esc = START. The active theme.ini is reloaded
  * as soon as it is saved. */
 #define SDL_MAIN_HANDLED
 #include <SDL.h>
@@ -267,6 +267,7 @@ static void make_covers(void)
 }
 
 static ui_row liked_rows[TRACK_COUNT], playlist_rows[PLAYLIST_COUNT], open_rows[TRACK_COUNT];
+static ui_row queue_rows[TRACK_COUNT];
 static ui_row search_rows[8];
 static int open_map[TRACK_COUNT], search_map[8], search_kind[8];
 
@@ -297,6 +298,19 @@ static void fill_library(ui_state *ui)
     }
     ui->lists[UI_CAT_PLAYLISTS][0].rows = playlist_rows;
     ui->lists[UI_CAT_PLAYLISTS][0].count = PLAYLIST_COUNT;
+    for (int i = 0; i < TRACK_COUNT - 1; ++i) {
+        track_row(&queue_rows[i], i + 1);
+        if (i < 2) {
+            char artist[96];
+            snprintf(artist, sizeof artist, "Queued \xC2\xB7 %s", TRACKS[i + 1].artist);
+            snprintf(queue_rows[i].subtitle, sizeof queue_rows[i].subtitle, "%s", artist);
+        }
+    }
+    ui_list *q = &ui->lists[UI_CAT_QUEUE][0];
+    snprintf(q->header, sizeof q->header, "Up next");
+    q->rows = queue_rows;
+    q->count = TRACK_COUNT - 1;
+    q->movable = 1;
 }
 
 static void open_playlist(ui_state *ui, int p)
@@ -436,6 +450,25 @@ static int handle(ui_state *ui, const ui_event *e)
     case UI_EV_SHUFFLE:
         ui->now.shuffle = !ui->now.shuffle;
         break;
+    case UI_EV_OPTIONS: {
+        static const char *const items[] = { "Add to queue", "Save to Liked Songs" };
+        static const char *const queue_items[] = { "Play now", "Remove from queue",
+                                                   "Save to Liked Songs" };
+        if (e->category == UI_CAT_QUEUE) ui_menu_open(ui, queue_items, 3);
+        else if (e->category == UI_CAT_LIKED || e->level == 1) ui_menu_open(ui, items, 2);
+        break;
+    }
+    case UI_EV_MENU:
+        ui_toast(ui, e->category == UI_CAT_QUEUE ? (e->value == 1 ? "Removed from queue"
+                                                    : "Playing now")
+                     : e->value == 0 ? "Added to queue" : "Saved to Liked Songs");
+        break;
+    case UI_EV_MOVE: {
+        ui_row tmp = queue_rows[e->index];
+        queue_rows[e->index] = queue_rows[e->index + e->value];
+        queue_rows[e->index + e->value] = tmp;
+        break;
+    }
     case UI_EV_REPEAT:
         ui->now.repeat = (ui->now.repeat + 1) % 3;
         break;
@@ -477,6 +510,7 @@ static unsigned key_buttons(const Uint8 *k)
     if (k[SDL_SCANCODE_Q]) b |= UI_BTN_L;
     if (k[SDL_SCANCODE_E]) b |= UI_BTN_R;
     if (k[SDL_SCANCODE_ESCAPE]) b |= UI_BTN_START;
+    if (k[SDL_SCANCODE_TAB]) b |= UI_BTN_SELECT;
     return b;
 }
 
@@ -486,7 +520,7 @@ static unsigned key_name(const char *name)
         { "up", UI_BTN_UP }, { "down", UI_BTN_DOWN }, { "left", UI_BTN_LEFT },
         { "right", UI_BTN_RIGHT }, { "cross", UI_BTN_CROSS }, { "circle", UI_BTN_CIRCLE },
         { "square", UI_BTN_SQUARE }, { "triangle", UI_BTN_TRIANGLE }, { "l", UI_BTN_L },
-        { "r", UI_BTN_R }, { "start", UI_BTN_START },
+        { "r", UI_BTN_R }, { "start", UI_BTN_START }, { "select", UI_BTN_SELECT },
     };
     for (size_t i = 0; i < sizeof names / sizeof names[0]; ++i)
         if (strcmp(names[i].name, name) == 0) return names[i].bit;

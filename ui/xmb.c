@@ -17,10 +17,10 @@
 #define SEEK_HOLD 0.45f     /* L/R held longer than this seeks */
 
 static const char *const cat_names[UI_CATS] = {
-    "Search", "Recent", "Liked Songs", "Playlists", "Now Playing", "Settings"
+    "Search", "Recent", "Liked Songs", "Playlists", "Now Playing", "Queue", "Settings"
 };
 static const unsigned cat_icons[UI_CATS] = {
-    ICON_SEARCH, ICON_HISTORY, ICON_HEART, ICON_LIST_MUSIC, ICON_MUSIC, ICON_SLIDERS
+    ICON_SEARCH, ICON_HISTORY, ICON_HEART, ICON_LIST_MUSIC, ICON_MUSIC, ICON_QUEUE, ICON_SLIDERS
 };
 
 static float clampf(float v, float lo, float hi)
@@ -79,6 +79,66 @@ int ui_init(ui_state *ui)
     return draw_init();
 }
 
+static void copy_label(char *dst, size_t cap, const char *src)
+{
+    size_t n = strlen(src);
+    if (n >= cap) n = cap - 1;
+    memcpy(dst, src, n);
+    dst[n] = '\0';
+}
+
+void ui_menu_open(ui_state *ui, const char *const *items, int count)
+{
+    ui_menu *m = &ui->menu;
+    if (count > UI_MENU_ITEMS) count = UI_MENU_ITEMS;
+    for (int i = 0; i < count; ++i) copy_label(m->items[i], sizeof m->items[i], items[i]);
+    m->count = count;
+    m->sel = 0;
+    m->open = count > 0;
+}
+
+void ui_toast(ui_state *ui, const char *text)
+{
+    copy_label(ui->toast, sizeof ui->toast, text);
+    ui->toast_left = 2.0f;
+}
+
+static void animate(ui_state *ui, float dt);
+
+/* Input while the menu is open: it takes every button. */
+static void menu_input(ui_state *ui, unsigned pressed, unsigned act)
+{
+    ui_menu *m = &ui->menu;
+    if (act & UI_BTN_UP) m->sel = m->sel > 0 ? m->sel - 1 : m->count - 1;
+    if (act & UI_BTN_DOWN) m->sel = m->sel + 1 < m->count ? m->sel + 1 : 0;
+    if (pressed & UI_BTN_CROSS) {
+        if (ui->event_count < UI_MAX_EVENTS) {
+            ui_event *e = &ui->events[ui->event_count++];
+            e->type = UI_EV_MENU;
+            e->category = m->category;
+            e->level = m->level;
+            e->index = m->index;
+            e->value = m->sel;
+        }
+        m->open = 0;
+    }
+    if (pressed & (UI_BTN_CIRCLE | UI_BTN_TRIANGLE)) m->open = 0;
+}
+
+/* Input while a row is picked up: ↑/↓ move it, anything else drops it. */
+static void move_input(ui_state *ui, unsigned pressed, unsigned act)
+{
+    const int lvl = ui->level[ui->cat];
+    const ui_list *list = &ui->lists[ui->cat][lvl];
+    int *sel = &ui->sel[ui->cat][lvl];
+    int dir = (act & UI_BTN_UP) ? -1 : (act & UI_BTN_DOWN) ? 1 : 0;
+    if (dir && *sel + dir >= 0 && *sel + dir < list->count) {
+        emit(ui, UI_EV_MOVE, dir);
+        *sel += dir;
+    }
+    if (pressed & (UI_BTN_CROSS | UI_BTN_CIRCLE | UI_BTN_SELECT)) ui->moving = 0;
+}
+
 void ui_open_level(ui_state *ui, int cat)
 {
     if (cat < 0 || cat >= UI_CATS) return;
@@ -104,6 +164,16 @@ void ui_update(ui_state *ui, unsigned buttons, float dt)
     }
     const unsigned act = pressed | repeat;
     ui->buttons = buttons;
+    if (ui->menu.open) {
+        menu_input(ui, pressed, act);
+        animate(ui, dt);
+        return;
+    }
+    if (ui->moving) {
+        move_input(ui, pressed, act);
+        animate(ui, dt);
+        return;
+    }
 
     const int cat = ui->cat, lvl = ui->level[cat];
     const ui_list *list = &ui->lists[cat][lvl];
@@ -131,8 +201,14 @@ void ui_update(ui_state *ui, unsigned buttons, float dt)
         ui->level[cat] = 0;
     }
     if (pressed & UI_BTN_SQUARE) emit(ui, cat == UI_CAT_SEARCH ? UI_EV_SEARCH : UI_EV_PAUSE, 0);
-    if (pressed & UI_BTN_TRIANGLE)
+    if (pressed & UI_BTN_TRIANGLE) {
         emit(ui, cat == UI_CAT_NOW ? UI_EV_SHUFFLE : UI_EV_OPTIONS, 0);
+        /* The host answers UI_EV_OPTIONS with ui_menu_open for this row. */
+        ui->menu.category = cat;
+        ui->menu.level = lvl;
+        ui->menu.index = *sel;
+    }
+    if ((pressed & UI_BTN_SELECT) && list->movable && list->count > 0) ui->moving = 1;
     if (pressed & UI_BTN_START) emit(ui, UI_EV_QUIT, 0);
 
     /* L/R: a tap changes track, holding seeks. */
@@ -153,8 +229,14 @@ void ui_update(ui_state *ui, unsigned buttons, float dt)
 
     if ((act & UI_BTN_LEFT) && ui->cat > 0) --ui->cat;
     if ((act & UI_BTN_RIGHT) && ui->cat < UI_CATS - 1) ++ui->cat;
+    animate(ui, dt);
+}
 
+static void animate(ui_state *ui, float dt)
+{
     ui->cat_pos = approach(ui->cat_pos, (float)ui->cat, 14.0f, dt);
+    ui->menu_pos = approach(ui->menu_pos, ui->menu.open ? 1.0f : 0.0f, 18.0f, dt);
+    if (ui->toast_left > 0) ui->toast_left -= dt;
     const float fade = 1.0f - expf(-6.0f * dt);
     ui_theme *th = &ui->theme;
     const ui_theme *to = &ui->theme_target;
@@ -184,8 +266,21 @@ static void draw_top(const ui_state *ui)
 {
     const ui_theme *t = &ui->theme;
     float x = 14;
-    const int cat = ui->cat, lvl = ui->level[cat];
+    int cat = ui->cat;
+    const int lvl = ui->level[cat];
+    if (ui->moving) {
+        x += font_draw(FONT_REGULAR, 10, x, 3, t->dim, "\xE2\x86\x91\xE2\x86\x93 Move") + 10;
+        hint(&x, ICON_CROSS, "Done", t->dim);
+        cat = -1;
+    }
     switch (cat) {
+    case -1:
+        break;
+    case UI_CAT_QUEUE:
+        hint(&x, ICON_CROSS, "Play", t->dim);
+        hint(&x, ICON_TRIANGLE, "Options", t->dim);
+        x += font_draw(FONT_REGULAR, 10, x, 3, t->dim, "SELECT Move") + 10;
+        break;
     case UI_CAT_SEARCH:
         hint(&x, ICON_CROSS, "Play", t->dim);
         hint(&x, ICON_SQUARE, "Search", t->dim);
@@ -268,7 +363,7 @@ static const list_style STYLE_NORMAL = { 28, 44, 13, 15 };
 static const list_style STYLE_COMPACT = { 24, 38, 12, 14 };
 
 static void draw_list(const ui_state *ui, const ui_list *list, float scroll, float x, float top,
-                      float bottom, const list_style *st, float alpha)
+                      float bottom, const list_style *st, float alpha, int moving_row)
 {
     const ui_theme *t = &ui->theme;
     if (alpha <= 0.01f) return;
@@ -302,6 +397,12 @@ static void draw_list(const ui_state *ui, const ui_list *list, float scroll, flo
         float size = st->small + (st->big - st->small) * s;
         float indent = (1.0f - s) * 8.0f;
         float cx = x + indent;
+        if (i == moving_row) {
+            draw_round_rect(cx - 6, y - 3, SCREEN_W - cx - 8, size + 6, 8,
+                            color_fade(t->accent, 0.25f * a));
+            font_draw(FONT_BOLD, 12, SCREEN_W - 32, y + (size - 16) / 2, color_fade(t->accent, a),
+                      "\xE2\x86\x91\xE2\x86\x93");
+        }
         draw_cover(row->cover, row->color, row->round, cx, y, size, a, s > 0.5f);
 
         float tx = cx + size + 10, max_w = SCREEN_W - tx - 16;
@@ -328,11 +429,12 @@ static void draw_levels(const ui_state *ui, int cat, float x, float top, float b
                         const list_style *st, float alpha, float slide)
 {
     float lp = ui->level_pos[cat];
+    const int moving = ui->moving && cat == ui->cat ? ui->sel[cat][ui->level[cat]] : -1;
     draw_list(ui, &ui->lists[cat][0], ui->scroll[cat][0], x + slide - 60.0f * lp, top, bottom, st,
-              alpha * (1.0f - lp));
+              alpha * (1.0f - lp), ui->level[cat] == 0 ? moving : -1);
     if (lp > 0.0f)
         draw_list(ui, &ui->lists[cat][1], ui->scroll[cat][1], x + slide + 60.0f * (1.0f - lp), top,
-                  bottom, st, alpha * lp);
+                  bottom, st, alpha * lp, ui->level[cat] == 1 ? moving : -1);
 }
 
 static void draw_search(const ui_state *ui, float bottom, float alpha, float slide)
@@ -474,4 +576,29 @@ void ui_draw(const ui_state *ui)
         break;
     }
     if (mini) draw_mini(ui);
+
+    if (ui->toast_left > 0 && ui->toast[0]) {
+        const float a = clampf(ui->toast_left / 0.3f, 0.0f, 1.0f);
+        /* Whole pixels, so the pill's pieces meet without a seam. */
+        const float w = floorf(font_width(FONT_BOLD, 12, ui->toast) + 28);
+        const float x = floorf((SCREEN_W - w) / 2), y = bottom - 34;
+        draw_round_rect(x, y, w, 26, 13, color_fade(t->text, a));
+        font_draw(FONT_BOLD, 12, x + 14, y + 5, color_fade(t->bg, a), ui->toast);
+    }
+
+    const float mp = ui->menu_pos;
+    if (mp > 0.01f) {
+        const ui_menu *m = &ui->menu;
+        r_rect(0, 0, SCREEN_W, SCREEN_H, color_fade(0xFF000000u, 0.55f * mp));
+        const float w = 230, h = (float)m->count * 26 + 16;
+        const float x = (SCREEN_W - w) / 2, y = (SCREEN_H - h) / 2 + (1.0f - mp) * 16;
+        draw_round_rect(x, y, w, h, 12, color_fade(t->surface, mp));
+        for (int i = 0; i < m->count; ++i) {
+            const float iy = y + 8 + (float)i * 26;
+            const int on = i == m->sel;
+            if (on) draw_round_rect(x + 6, iy, w - 12, 24, 8, color_fade(t->accent, mp));
+            font_draw_fit(on ? FONT_BOLD : FONT_REGULAR, 13, x + 16, iy + 4,
+                          color_fade(on ? t->bg : t->text, mp), m->items[i], w - 32);
+        }
+    }
 }
