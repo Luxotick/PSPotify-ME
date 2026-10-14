@@ -6,6 +6,7 @@ A native Spotify client for the PlayStation Portable. Everything runs on the PSP
 
 - **XMB-style interface** drawn by the PSP's graphics chip at 60 fps: categories across the top, smooth lists, album covers everywhere.
 - **Search**, **Recently played**, **Liked Songs** and your **playlists**.
+- A **queue**: add songs with △, reorder them with SELECT; save and remove **Liked Songs** from the same menu.
 - **Full tracks** (Ogg Vorbis 160 kbps), streamed: long tracks play through a small buffer instead of filling the RAM.
 - **Seek** (hold L/R), **shuffle**, **repeat**, and an **equalizer that runs on the Media Engine**.
 - **Themes** you can write in a text file, and **Cover colors**: the theme takes its color from the album art.
@@ -62,7 +63,8 @@ Updating from an older version keeps your pairing. More detail, plus troubleshoo
 | ✕ | Open / play | Repeat: off, queue, track |
 | ○ | Back | — |
 | □ | Pause / resume (in Search: type a search) | Pause / resume |
-| △ | — | Shuffle |
+| △ | Song menu: add to queue, save to / remove from Liked Songs | Shuffle |
+| SELECT | In Queue: pick a song up, then ↑/↓ to move it | — |
 | L / R | Tap: previous (restarts after 3 s) / next song. Hold: seek back / forward | Same |
 | START | Quit | Quit |
 
@@ -115,7 +117,7 @@ To try themes without the PSP, the [PC preview](docs/PREVIEW.md) reloads `theme.
 
 ## Status
 
-Works on hardware: pairing, the XMB interface, Liked Songs, playlists, search, recently played, covers, Cover colors and themes, full-track playback with Media Engine decoding, seeking, shuffle, repeat, the equalizer, pause, next/previous and volume.
+Works on hardware: pairing, the XMB interface, Liked Songs, playlists, search, recently played, covers, Cover colors and themes, full-track playback with Media Engine decoding, seeking, shuffle, repeat, the equalizer, pause, next/previous and volume. The queue and Liked Songs editing are new and still need wider testing.
 
 Confirmed on the PSP-1000, PSP-2000, PSP-3000 and PSP Go, thanks to volunteers with hardware I don't have.
 The app logs device, firmware and Media Engine image information before it starts the Media Engine.
@@ -132,7 +134,8 @@ BL, SD, unknown images, partial inspection failures and unsupported firmware ref
 ### TODO
 
 - **Spotify Connect** (control the PSP from the Spotify apps): work in progress on the [`wip/spotify-connect`](https://github.com/Luxotick/PSPotify-ME/tree/wip/spotify-connect) branch.
-- Like songs and add them to playlists.
+- Add songs to playlists.
+- Keep queued songs when you start another list.
 - Search for artists, albums and playlists, not only songs.
 - Reconnect only on network errors, not when Spotify refuses a key.
 - Request keys for alternative tracks with the alternative's ID.
