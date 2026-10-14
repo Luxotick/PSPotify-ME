@@ -145,7 +145,9 @@ int spotify_ctx_start(spotify_ctx *c, const spotify_ui_hooks *ui)
     static spotify_ctx *self;
     self = c;
     memory_log("pre-keepalive-thread");
-    c->keepalive_thread = sceKernelCreateThread("ap_keepalive", keepalive_thread, 0x20,
+    /* Below the UI (0x20) and the player (0x22): its prefetch does whole TLS
+     * handshakes, and the PSP does not time-slice threads of equal priority. */
+    c->keepalive_thread = sceKernelCreateThread("ap_keepalive", keepalive_thread, 0x26,
                                                 0x10000, 0, NULL);
     if (c->keepalive_thread >= 0) sceKernelStartThread(c->keepalive_thread, sizeof self, &self);
     return 0;

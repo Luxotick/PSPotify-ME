@@ -941,7 +941,11 @@ int spotify_ui_run(volatile int *exit_requested)
     load_playlists();
 
     memory_log("pre-player-cover-threads");
-    SceUID thid = sceKernelCreateThread("player", player_thread, 0x1C, 0x20000, 0, NULL);
+    /* Priorities: UI 0x20 > player 0x22 > download 0x24 > keepalive 0x26 >
+     * covers and lists 0x30. The UI runs a few ms per frame and then waits for
+     * vblank, so the player keeps plenty of time; above the UI, its TLS
+     * handshakes at track changes froze frames for up to 110 ms. */
+    SceUID thid = sceKernelCreateThread("player", player_thread, 0x22, 0x20000, 0, NULL);
     SceUID cover_thid = sceKernelCreateThread("cover", cover_thread, 0x30, 0x20000, 0, NULL);
     SceUID loader_thid = sceKernelCreateThread("loader", loader_thread, 0x30, 0x10000, 0, NULL);
     thumb_lock = sceKernelCreateSema("thumbs", 0, 1, 1, NULL);
