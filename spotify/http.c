@@ -304,7 +304,7 @@ void http_stream_close(http_stream *s)
 static int open_once(http_stream *s, const char *method, const url_parts *u,
                      const char *extra_headers, const void *body, size_t body_len,
                      uint64_t *content_length, char *location, size_t location_cap,
-                     int may_reuse)
+                     int may_reuse, int keep_alive)
 {
     memset(s, 0, sizeof *s);
     s->sock = -1;
@@ -326,7 +326,7 @@ static int open_once(http_stream *s, const char *method, const url_parts *u,
     if (strlen(u->host) < sizeof s->host) memcpy(s->host, u->host, strlen(u->host) + 1);
     s->port = u->port;
     s->https = (unsigned char)u->https;
-    s->keep = 1;
+    s->keep = (unsigned char)keep_alive;
 
     /* Only add a default Accept when the caller has none: with two Accept
      * headers clienttoken.spotify.com answers 200 with an empty body. */
@@ -338,8 +338,9 @@ static int open_once(http_stream *s, const char *method, const url_parts *u,
                      "User-Agent: PSP-Spotify/1.0\r\n"
                      "%s"
                      "Accept-Encoding: identity\r\n"
-                     "Connection: keep-alive\r\n",
-                     method, u->path, u->host, default_accept);
+                     "Connection: %s\r\n",
+                     method, u->path, u->host, default_accept,
+                     keep_alive ? "keep-alive" : "close");
     if (n < 0 || (size_t)n >= sizeof req) return -4;
     size_t used = (size_t)n;
     if (body || strcmp(method, "POST") == 0) {
@@ -425,9 +426,9 @@ static int open_once(http_stream *s, const char *method, const url_parts *u,
     return status;
 }
 
-int http_stream_open_ex(http_stream *s, const char *method, const char *url,
+static int open_request(http_stream *s, const char *method, const char *url,
                         const char *extra_headers, const void *body, size_t body_len,
-                        uint64_t *content_length)
+                        uint64_t *content_length, int keep_alive)
 {
     url_parts u;
     char location[1024];
@@ -441,12 +442,13 @@ int http_stream_open_ex(http_stream *s, const char *method, const char *url,
 
     for (int hop = 0; hop <= MAX_REDIRECTS; ++hop) {
         int status = open_once(s, method, &u, extra_headers, body, body_len,
-                               content_length, location, sizeof location, 1);
+                               content_length, location, sizeof location, keep_alive,
+                               keep_alive);
         if (status == STALE_CONNECTION) {
             s->keep = 0;
             http_stream_close(s);
             status = open_once(s, method, &u, extra_headers, body, body_len,
-                               content_length, location, sizeof location, 0);
+                               content_length, location, sizeof location, 0, keep_alive);
         }
         if (status < 0) {
             http_stream_close(s);
@@ -475,9 +477,22 @@ int http_stream_open_ex(http_stream *s, const char *method, const char *url,
     return -8;
 }
 
+int http_stream_open_ex(http_stream *s, const char *method, const char *url,
+                        const char *extra_headers, const void *body, size_t body_len,
+                        uint64_t *content_length)
+{
+    return open_request(s, method, url, extra_headers, body, body_len, content_length, 1);
+}
+
 int http_stream_open(http_stream *s, const char *url, uint64_t *content_length)
 {
-    return http_stream_open_ex(s, "GET", url, NULL, NULL, 0, content_length);
+    return open_request(s, "GET", url, NULL, NULL, 0, content_length, 1);
+}
+
+int http_stream_open_download(http_stream *s, const char *url, const char *extra_headers,
+                              uint64_t *content_length)
+{
+    return open_request(s, "GET", url, extra_headers, NULL, 0, content_length, 0);
 }
 
 int http_stream_read(http_stream *s, void *out, unsigned int len)

@@ -302,8 +302,8 @@ static SceUID fetch_restart(fetcher *f, fetcher **fp, SceUID thid, const char *u
     int status = -1;
     for (int u = 0; u < url_count && status != 206; ++u) {
         uint64_t length = 0;
-        status = http_stream_open_ex(&f->http, "GET", urls + (size_t)u * url_stride, range,
-                                     NULL, 0, &length);
+        status = http_stream_open_download(&f->http, urls + (size_t)u * url_stride, range,
+                                           &length);
         if (status > 0 && status != 206) http_stream_close(&f->http);
     }
     if (status != 206) {
@@ -329,7 +329,8 @@ int spotify_play_ogg(const char *urls, unsigned int url_stride, int url_count,
     int status = -1;
     log_printf("PLAYER: opening full file (%d CDN URLs)\n", url_count);
     for (int u = 0; u < url_count && status != 200; ++u) {
-        status = http_stream_open(&f.http, urls + (size_t)u * url_stride, &content_length);
+        status = http_stream_open_download(&f.http, urls + (size_t)u * url_stride, NULL,
+                                           &content_length);
         if (status > 0 && status != 200) {
             log_printf("PLAYER: CDN %d HTTP %d\n", u, status);
             http_stream_close(&f.http);

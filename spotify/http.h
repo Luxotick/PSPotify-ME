@@ -49,6 +49,12 @@ int http_stream_open_ex(http_stream *s, const char *method, const char *url,
                         const char *extra_headers, const void *body, size_t body_len,
                         uint64_t *content_length);
 int http_stream_open(http_stream *s, const char *url, uint64_t *content_length);
+/* http_stream_open_ex on a fresh connection that asks for "Connection:
+ * close" and is never pooled. For the audio CDN: since requests asked for
+ * keep-alive, Spotify's CDN sent the files at about the playback rate
+ * (~20 KB/s instead of ~200 KB/s) and the audio stalled. */
+int http_stream_open_download(http_stream *s, const char *url, const char *extra_headers,
+                              uint64_t *content_length);
 /* Returns bytes read, 0 at end of body, or < 0 on error. */
 int http_stream_read(http_stream *s, void *buf, unsigned int len);
 /* Closes the stream. A connection whose body was read to the end is kept

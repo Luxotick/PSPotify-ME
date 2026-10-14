@@ -136,11 +136,17 @@ static char cover_tex_id[24];
 static char theme_names[MAX_THEMES][32];
 static uint32_t theme_swatch[MAX_THEMES];   /* accent, shown in Settings */
 static int theme_count, theme_active = -1;
-/* Settings: Cover colors, Equalizer, then one row per theme. */
-#define SETTINGS_FIXED 3
+/* Spotify Connect is work in progress (branch wip/spotify-connect): built
+ * in but switched off, and without its Settings row, unless
+ * PSPOTIFY_CONNECT is 1. */
+#ifndef PSPOTIFY_CONNECT
+#define PSPOTIFY_CONNECT 0
+#endif
+/* Settings: Cover colors, Equalizer, [Spotify Connect,] then the themes. */
+#define SETTINGS_FIXED (2 + PSPOTIFY_CONNECT)
 static ui_row settings_rows[MAX_THEMES + SETTINGS_FIXED];
 static int eq_preset;
-static int connect_on = 1;      /* Spotify Connect, Settings row 2 */
+static int connect_on = PSPOTIFY_CONNECT;
 
 static const char *connect_name(void)
 {
@@ -308,6 +314,7 @@ static void fill_settings(void)
     snprintf(r->title, sizeof r->title, "Equalizer: %s", player_eq_names[eq_preset]);
     snprintf(r->subtitle, sizeof r->subtitle, "Runs on the Media Engine");
     r->color = eq_preset ? xmb.theme_target.accent : 0xFF475569u;
+#if PSPOTIFY_CONNECT
     r = &settings_rows[2];
     memset(r, 0, sizeof *r);
     snprintf(r->title, sizeof r->title, "Spotify Connect");
@@ -315,6 +322,7 @@ static void fill_settings(void)
              ? "On \xC2\xB7 control this PSP from the Spotify apps"
              : "Off \xC2\xB7 hidden from the Spotify apps");
     r->color = connect_on ? xmb.theme_target.accent : 0xFF475569u;
+#endif
     for (int k = 0; k < theme_count; ++k) {
         r = &settings_rows[k + SETTINGS_FIXED];
         memset(r, 0, sizeof *r);
@@ -362,7 +370,8 @@ static void load_settings(void)
             if (!strcmp(key, "theme")) copy_text(wanted, sizeof wanted, value);
             else if (!strcmp(key, "cover_colors")) cover_colors_on = strcmp(value, "off") != 0;
             else if (!strcmp(key, "equalizer")) eq_preset = atoi(value);
-            else if (!strcmp(key, "connect")) connect_on = strcmp(value, "off") != 0;
+            else if (!strcmp(key, "connect"))
+                connect_on = PSPOTIFY_CONNECT && strcmp(value, "off") != 0;
             else if (!strcmp(key, "shuffle")) shuffle_on = atoi(value) != 0;
             else if (!strcmp(key, "repeat")) repeat_mode = atoi(value);
         }
@@ -1351,7 +1360,7 @@ static int handle(const ui_event *e)
             if (search_done_seq == search_req_seq && search_shown_seq == search_done_seq)
                 play_from(found, search_done_count, e->index, -10 - (int)search_done_seq,
                           "Search", "");
-        } else if (e->category == UI_CAT_SETTINGS && e->index == 2) {
+        } else if (PSPOTIFY_CONNECT && e->category == UI_CAT_SETTINGS && e->index == 2) {
             connect_on = !connect_on;
             if (connect_on) connect_start(&ctx, connect_name());
             else connect_stop();
