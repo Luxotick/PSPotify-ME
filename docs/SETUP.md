@@ -12,8 +12,8 @@ ms0:/PSP/GAME/PSPOTIFY/THEMES/...
 The folder must be writable. On start the app writes the following files into it:
 - `kcall.prx` (the embedded Media Engine bridge),
 - `spotify.cfg` (your sign-in),
-- `settings.ini` (theme, Cover colors, equalizer, shuffle and repeat),
-- `spotify.log`.
+- `settings.ini` (theme, Cover colors, equalizer, shuffle, repeat and the debug switch),
+- `spotify.log`, only in debug mode (see Troubleshooting).
 
 Without the `THEMES` folder the app still runs, with its built-in dark theme.
 
@@ -34,7 +34,13 @@ If you already have a `spotify.cfg` from an older build, copy it into `ms0:/PSP/
 
 ## Troubleshooting
 
-Every run writes `spotify.log` next to the EBOOT. Each line is stamped with the seconds since start. Attach this file to bug reports.
+By default the app writes no log, so the Memory Stick is not written to all the time. If something goes wrong:
+
+1. Open `ms0:/PSP/GAME/PSPOTIFY/settings.ini` in a text editor and change `debug = off` to `debug = on`.
+2. Start the app again and repeat what went wrong.
+3. `spotify.log` is now next to the EBOOT. Each line is stamped with the seconds since start. Attach this file to bug reports.
+
+Set `debug = off` again afterwards.
 
 | Symptom | What to check |
 |---|---|

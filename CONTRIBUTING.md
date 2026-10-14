@@ -15,7 +15,7 @@ Thanks for wanting to help. Bug reports, fixes, new features and testing on othe
 Open an issue with:
 - the PSP model, firmware and CFW,
 - what you did and what happened,
-- `spotify.log` from the game folder (`ms0:/PSP/GAME/PSPOTIFY/`).
+- `spotify.log` from the game folder (`ms0:/PSP/GAME/PSPOTIFY/`). The log is only written in debug mode: set `debug = on` in `settings.ini` there, then run the app again.
 
 The log contains your Spotify username but no passwords or tokens. Still, look through it before you post it.
 

@@ -13,6 +13,9 @@ static char log_path[300] = "spotify.log";
 static SceInt64 log_start;
 static int at_line_start = 1;
 static int echo = 1;
+/* Debug mode: write spotify.log. Off by default so normal use never
+ * touches the Memory Stick. */
+static int enabled;
 /* UI, player and fetch threads all log; keep lines whole. */
 static SceUID log_lock = -1;
 
@@ -63,6 +66,31 @@ void log_tick(void)
     log_flush();
 }
 
+int log_enabled(void)
+{
+    return enabled;
+}
+
+/* Looks for "debug = on" (or 1/yes/true) in settings.ini. */
+static int read_debug_switch(const char *dir)
+{
+    char path[300];
+    int n = snprintf(path, sizeof path, "%s/settings.ini", dir && dir[0] ? dir : ".");
+    if (n < 0 || (size_t)n >= sizeof path) return 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    int on = 0;
+    char line[128];
+    while (fgets(line, sizeof line, f)) {
+        char key[32], value[16];
+        if (sscanf(line, " %31[a-z_] = %15[a-zA-Z0-9]", key, value) != 2) continue;
+        if (strcmp(key, "debug") == 0)
+            on = !strcmp(value, "on") || !strcmp(value, "1") || !strcmp(value, "yes") || !strcmp(value, "true");
+    }
+    fclose(f);
+    return on;
+}
+
 void log_set_echo(int on)
 {
     echo = on;
@@ -76,12 +104,15 @@ void log_init(const char *dir)
     }
     log_start = sceKernelGetSystemTimeWide();
     if (log_lock < 0) log_lock = sceKernelCreateSema("log", 0, 1, 1, NULL);
+    enabled = read_debug_switch(dir);
+    if (!enabled) return;
     SceUID f = sceIoOpen(LOG_PATH, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
     if (f >= 0) sceIoClose(f);
 }
 
 int log_printf(const char *fmt, ...)
 {
+    if (!enabled && !echo) return 0;
     char buf[512];
     va_list ap;
     va_start(ap, fmt);
@@ -91,6 +122,10 @@ int log_printf(const char *fmt, ...)
     if (log_lock >= 0) sceKernelWaitSema(log_lock, 1, NULL);
 
     if (echo) pspDebugScreenPrintf("%s", buf);
+    if (!enabled) {
+        if (log_lock >= 0) sceKernelSignalSema(log_lock, 1);
+        return n;
+    }
 
     /* The file copy gets a [seconds.millis] stamp at each line start so
      * hangs and slow steps can be timed afterwards. */

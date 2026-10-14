@@ -365,9 +365,12 @@ static void save_settings(void)
     FILE *f = fopen(path, "w");
     if (!f) return;
     fprintf(f, "# PSPotify ME settings\ntheme = %s\ncover_colors = %s\nequalizer = %d\n"
-               "shuffle = %d\nrepeat = %d\nconnect = %s\n",
+               "shuffle = %d\nrepeat = %d\nconnect = %s\n"
+               "# on: write spotify.log for bug reports (from the next start)\n"
+               "debug = %s\n",
             theme_active >= 0 ? theme_names[theme_active] : "", cover_colors_on ? "on" : "off",
-            eq_preset, shuffle_on, repeat_mode, connect_on ? "on" : "off");
+            eq_preset, shuffle_on, repeat_mode, connect_on ? "on" : "off",
+            log_enabled() ? "on" : "off");
     fclose(f);
 }
 
@@ -385,6 +388,7 @@ static void load_settings(void)
     char path[300], line[128], wanted[32] = "Midnight";
     path_in_app(path, sizeof path, "settings.ini");
     FILE *f = fopen(path, "r");
+    const int missing = !f;
     if (f) {
         while (fgets(line, sizeof line, f)) {
             char key[32], value[64];
@@ -407,6 +411,8 @@ static void load_settings(void)
     for (int i = 0; i < theme_count; ++i)
         if (!strcmp(theme_names[i], wanted)) active = i;
     apply_theme(active, 1);
+    /* First start: write the file so the debug switch is there to edit. */
+    if (missing) save_settings();
 }
 
 /* ------------------------------------------------------------ loader thread */
@@ -1744,7 +1750,9 @@ int spotify_ui_run(volatile int *exit_requested)
     spotify_ui_hooks hooks = { on_status, on_pair_code };
     int ret = spotify_ctx_start(&ctx, &hooks);
     if (ret < 0) {
-        frame_message("Could not sign in to Spotify", "See spotify.log. START: exit");
+        frame_message("Could not sign in to Spotify", log_enabled()
+                      ? "See spotify.log. START: exit"
+                      : "debug = on in settings.ini logs it. START: exit");
         SceCtrlData pad;
         do {
             sceCtrlPeekBufferPositive(&pad, 1);

@@ -147,7 +147,7 @@ BL, SD, unknown images, partial inspection failures and unsupported firmware ref
 - **Errors:** a track that fails to play is skipped, and the screen says why (no Premium, not enough memory, no playable file). After three failures in a row playback stops.
 - **Long sessions:** sessions longer than an hour, which need token renewal, have had little testing.
 
-Everything is logged to `spotify.log` next to the EBOOT. Bug reports with that file attached are very welcome.
+The app keeps quiet by default and writes no log. To get one for a bug report, set `debug = on` in `settings.ini` (next to the EBOOT) and start the app again; it then writes `spotify.log` next to the EBOOT. Bug reports with that file attached are very welcome.
 
 ## Contributing
 
