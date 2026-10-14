@@ -247,10 +247,20 @@ static void make_covers(void)
         uint32_t base = TRACKS[t].color, dark = shade(base, 0.45f), light = shade(base, 1.6f);
         for (int y = 0; y < COVER; ++y)
             for (int x = 0; x < COVER; ++x) {
-                int dx = x - 40, dy = y - 24;
                 uint32_t c = x + y < COVER + (t * 7) % 24 ? base : dark;
-                if (dx * dx + dy * dy < 13 * 13) c = light;
-                cover_px[t][y * COVER + x] = c;
+                /* Anti-aliased disc: 4x4 samples per pixel. */
+                int inside = 0;
+                for (int sy = 0; sy < 4; ++sy)
+                    for (int sx = 0; sx < 4; ++sx) {
+                        float dx = x + (sx + 0.5f) / 4 - 40, dy = y + (sy + 0.5f) / 4 - 24;
+                        inside += dx * dx + dy * dy < 13 * 13;
+                    }
+                uint32_t mixed = 0xFF000000u;
+                for (int shift = 0; shift < 24; shift += 8) {
+                    uint32_t a = (c >> shift) & 0xFF, b = (light >> shift) & 0xFF;
+                    mixed |= ((a * (16 - inside) + b * inside) / 16) << shift;
+                }
+                cover_px[t][y * COVER + x] = mixed;
             }
         covers[t] = r_tex_create(COVER, COVER, cover_px[t], 1);
     }
