@@ -796,7 +796,9 @@ static int sp_tracks_unlocked(const char *client_token, const char *access_token
 }
 
 /* Album { cover_group = 17 { image = 1 { file_id = 1, size = 2 } } }, with
- * the older repeated cover = 9 as fallback. Prefers SMALL (size 1). */
+ * the older repeated cover = 9 as fallback. Prefers DEFAULT (size 0,
+ * 300x300): SMALL (64x64) looks blurry on the Now Playing screen, and LARGE
+ * (640x640) is over the PSP-1000's 512x512 cover limit. */
 static void parse_album_cover(const uint8_t *album, size_t len, spotify_track *t)
 {
     const uint8_t *group;
@@ -824,8 +826,8 @@ static void parse_album_cover(const uint8_t *album, size_t len, spotify_track *t
             if (iff.field == 1 && iff.wire == 2 && iff.len == 20) id = iff.data;
             if (iff.field == 2 && iff.wire == 0) size = (int)iff.varint;
         }
-        /* rank: SMALL (1) best, then DEFAULT (0), then larger ones */
-        int rank = size == 1 ? 3 : size == 0 ? 2 : 1;
+        /* rank: DEFAULT (0) best, then SMALL (1), then larger ones */
+        int rank = size == 0 ? 3 : size == 1 ? 2 : 1;
         if (id && rank > best) {
             memcpy(t->cover, id, 20);
             t->has_cover = 1;
