@@ -5,6 +5,7 @@
 #include "../ui/palette.h"
 #include "../ui/ui.h"
 #include "config.h"
+#include "connect.h"
 #include "http.h"
 #include "tls.h"
 #include "log.h"
@@ -89,6 +90,9 @@ static spotify_track queue[MAX_TRACKS];
 static volatile int queue_len;
 static int queue_key = -2;          /* -1 Liked Songs, else a playlist index */
 static char queue_name[96];
+static char queue_uri[96];          /* Spotify context URI, for Spotify Connect */
+/* Where the next track starts, and whether paused (a Connect transfer). */
+static volatile int start_at_ms, start_paused;
 
 static player_control control;
 static volatile int request_index = -1;
@@ -564,7 +568,10 @@ static int player_thread(SceSize args, void *argp)
         control.paused = 0;
         control.position_ms = 0;
         control.fetched_pct = 0;
-        control.seek_ms = -1;
+        control.seek_ms = start_at_ms > 0 ? start_at_ms : -1;
+        control.paused = start_paused;
+        start_at_ms = 0;
+        start_paused = 0;
         control.duration_ms = queue[idx].duration_ms;
         play_state = PS_LOADING;
         int upcoming = next_index(idx, 1);
@@ -604,8 +611,10 @@ static void start_track(int queue_idx)
     control.stop = 1;           /* ends the current track, if any */
 }
 
-static void play_from(const spotify_track *tracks, int count, int idx, int key, const char *name)
+static void play_from(const spotify_track *tracks, int count, int idx, int key, const char *name,
+                      const char *uri)
 {
+    copy_text(queue_uri, sizeof queue_uri, uri);
     if (count <= 0 || idx < 0 || idx >= count) return;
     /* Queue this list unless it is already the queue. */
     if (queue_key != key || queue_len != count) {
@@ -1026,6 +1035,7 @@ static void sync_state(void)
             ++cover_request_seq;
         }
         n->active = 1;
+        n->remote = connect_online();
         n->dur_ms = t->duration_ms;
         n->pos_ms = control.position_ms;
         n->paused = control.paused;
@@ -1188,6 +1198,75 @@ static void start_search(void)
     log_printf("UI: search requested\n");
 }
 
+/* ------------------------------------------------------------ Spotify Connect */
+
+/* A new queue key for every Connect play: the apps may resend a context. */
+static int connect_key = -100000;
+
+static void handle_connect(void)
+{
+    connect_command c;
+    if (!connect_poll(&c)) return;
+    switch (c.type) {
+    case CONNECT_PLAY:
+        if (c.shuffle >= 0) shuffle_on = c.shuffle;
+        if (c.repeat >= 0) repeat_mode = c.repeat;
+        start_at_ms = c.position_ms;
+        start_paused = c.paused;
+        play_from(c.tracks, c.count, c.index, connect_key--, "Spotify Connect", c.context_uri);
+        connect_command_done();
+        break;
+    case CONNECT_PAUSE:
+    case CONNECT_RELEASE:
+        control.paused = 1;
+        break;
+    case CONNECT_RESUME:
+        control.paused = 0;
+        break;
+    case CONNECT_NEXT:
+        start_track(next_index(current_index, 0));
+        break;
+    case CONNECT_PREV:
+        start_track(control.position_ms > 3000 ? current_index : prev_index(current_index));
+        break;
+    case CONNECT_SEEK:
+        control.seek_ms = c.value;
+        break;
+    case CONNECT_SHUFFLE:
+        shuffle_on = c.value != 0;
+        if (current_index >= 0) build_order(current_index);
+        break;
+    case CONNECT_REPEAT_CONTEXT:
+        repeat_mode = c.value ? 1 : (repeat_mode == 2 ? 2 : 0);
+        break;
+    case CONNECT_REPEAT_TRACK:
+        repeat_mode = c.value ? 2 : (repeat_mode == 2 ? 0 : repeat_mode);
+        break;
+    case CONNECT_VOLUME:
+        set_volume(c.value);
+        break;
+    }
+}
+
+static void report_connect(void)
+{
+    connect_status s;
+    memset(&s, 0, sizeof s);
+    const int idx = current_index;
+    s.active = idx >= 0 && idx < queue_len && play_state != PS_IDLE;
+    if (s.active) {
+        copy_text(s.track_id, sizeof s.track_id, queue[idx].id);
+        copy_text(s.context_uri, sizeof s.context_uri, queue_uri);
+        s.position_ms = control.position_ms;
+        s.duration_ms = queue[idx].duration_ms;
+        s.playing = !control.paused;
+    }
+    s.shuffle = shuffle_on;
+    s.repeat = repeat_mode;
+    s.volume = xmb.volume;
+    connect_report(&s);
+}
+
 /* Returns 1 when the user asked to quit. */
 static int handle(const ui_event *e)
 {
@@ -1196,7 +1275,9 @@ static int handle(const ui_event *e)
         return 1;
     case UI_EV_OPEN:
         if (e->category == UI_CAT_LIKED && liked_shown) {
-            play_from(liked, liked_count, e->index, -1, "Liked Songs");
+            static char uri[sizeof ctx.cfg.username + 32];
+            snprintf(uri, sizeof uri, "spotify:user:%s:collection", ctx.cfg.username);
+            play_from(liked, liked_count, e->index, -1, "Liked Songs", uri);
         } else if (e->category == UI_CAT_PLAYLISTS && e->level == 0) {
             int p = e->index + 1;
             ui_list *l = &xmb.lists[UI_CAT_PLAYLISTS][1];
@@ -1210,8 +1291,12 @@ static int handle(const ui_event *e)
         } else if (e->category == UI_CAT_PLAYLISTS) {
             /* Only once the list on screen is the one in the buffer. */
             if (open_req_seq == open_done_seq && open_shown_seq == open_done_seq)
+            {
+                char uri[48];
+                snprintf(uri, sizeof uri, "spotify:playlist:%s", playlists[open_done_playlist].id);
                 play_from(opened, open_done_count, e->index, open_done_playlist,
-                          playlists[open_done_playlist].name);
+                          playlists[open_done_playlist].name, uri);
+            }
         } else if (e->category == UI_CAT_RECENT && e->level == 0) {
             ui_list *l = &xmb.lists[UI_CAT_RECENT][1];
             copy_text(l->header, sizeof l->header, recent_rows[e->index].title);
@@ -1224,11 +1309,11 @@ static int handle(const ui_event *e)
         } else if (e->category == UI_CAT_RECENT) {
             if (ctx_req_seq == ctx_done_seq && ctx_shown_seq == ctx_done_seq)
                 play_from(ctx_tracks, ctx_done_count, e->index, -2000 - (int)ctx_done_seq,
-                          recent_rows[ctx_req_index].title);
+                          recent_rows[ctx_req_index].title, recent[ctx_req_index].uri);
         } else if (e->category == UI_CAT_SEARCH) {
             if (search_done_seq == search_req_seq && search_shown_seq == search_done_seq)
                 play_from(found, search_done_count, e->index, -10 - (int)search_done_seq,
-                          "Search");
+                          "Search", "");
         } else if (e->category == UI_CAT_SETTINGS && e->index == 1) {
             eq_preset = (eq_preset + 1) % PLAYER_EQ_PRESETS;
             control.eq_preset = eq_preset;
@@ -1388,6 +1473,8 @@ int spotify_ui_run(volatile int *exit_requested)
     set_volume(80);
     log_set_buffered(1);
     load_playlists();
+    connect_start(&ctx, spotify_device_model == 0 ? "PSP-1000" : spotify_device_model == 1
+                        ? "PSP-2000" : spotify_device_model == 4 ? "PSP Go" : "PSP-3000");
 
     memory_log("pre-player-cover-threads");
     /* Priorities: UI 0x20 > player 0x22 > download 0x24 > keepalive 0x26 >
@@ -1434,7 +1521,9 @@ int spotify_ui_run(volatile int *exit_requested)
             skip_frame_timing = 0;
             last = sceKernelGetSystemTimeWide();
         }
+        handle_connect();
         sync_state();
+        report_connect();
         log_tick();
 
         render_gu_begin();
@@ -1458,6 +1547,7 @@ int spotify_ui_run(volatile int *exit_requested)
         if (sceKernelWaitThreadEnd(thid, &timeout) < 0) sceKernelTerminateThread(thid);
         sceKernelDeleteThread(thid);
     }
+    connect_stop();
     spotify_ctx_stop(&ctx);
     if (thumb_lock >= 0) sceKernelDeleteSema(thumb_lock);
     log_set_buffered(0);
