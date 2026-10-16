@@ -94,6 +94,7 @@ def package(build):
     run(sys.executable, ROOT / "scripts" / "verify_import_layout.py", build, "--output", debug)
     metadata = {
         "status": "BUILD VERIFIED",
+        "version": (ROOT / "VERSION").read_text(encoding="utf-8").strip(),
         "source_commit": source_git("rev-parse", "HEAD"),
         "source_branch": source_git("branch", "--show-current")
                          or os.environ.get("GITHUB_HEAD_REF") or os.environ.get("GITHUB_REF_NAME", ""),

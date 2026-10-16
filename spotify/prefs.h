@@ -5,16 +5,19 @@
  * come from the same place. */
 #include <stdio.h>
 
-/* The groups on the Settings screen's first level, in this order. Themes and
- * Categories are lists of their own; the others list prefs. */
+/* The groups on the Settings screen's first level, in this order. Themes,
+ * the theme gallery, Categories and About are lists of their own; the others
+ * list prefs. */
 enum {
     PREF_GROUP_THEMES,
+    PREF_GROUP_GALLERY,
     PREF_GROUP_APPEARANCE,
     PREF_GROUP_LAYOUT,
     PREF_GROUP_CATEGORIES,
     PREF_GROUP_SOUND,
     PREF_GROUP_PLAYBACK,
     PREF_GROUP_CONTROLS,
+    PREF_GROUP_ABOUT,
     PREF_GROUPS,
     PREF_HIDDEN = -1        /* saved, but not shown in Settings */
 };
@@ -52,6 +55,8 @@ typedef enum {
     PREF_LR,
     PREF_VOLUME_STEP,
     PREF_REMOTE,
+    /* About */
+    PREF_CHECK_UPDATES,
     /* Remembered between runs, changed elsewhere */
     PREF_SHUFFLE,
     PREF_REPEAT,

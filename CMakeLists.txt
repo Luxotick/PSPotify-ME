@@ -60,6 +60,7 @@ add_executable(psp-dualcore-actions
     spotify/session.c
     spotify/render_gu.c
     spotify/connect.c
+    spotify/site.c
     spotify/prefs.c
     spotify/ui.c
     ui/xmb.c
@@ -69,6 +70,13 @@ add_executable(psp-dualcore-actions
     ui/palette.c
     ${UI_FONTS_C}
 )
+
+# The app's version, from VERSION: shown in Settings and compared with the
+# site's update.txt. Bump it for every release.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" PSPOTIFY_VERSION)
+string(STRIP "${PSPOTIFY_VERSION}" PSPOTIFY_VERSION)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
+target_compile_definitions(psp-dualcore-actions PRIVATE PSPOTIFY_VERSION="${PSPOTIFY_VERSION}")
 
 target_compile_options(psp-dualcore-actions PRIVATE
     -Os

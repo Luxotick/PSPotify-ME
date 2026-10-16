@@ -31,6 +31,9 @@
 #define ICON_HEADPHONES     0xe0f1u
 #define ICON_GAMEPAD        0xe0dfu
 #define ICON_PIN            0xe259u
+#define ICON_INFO           0xe0f9u
+#define ICON_IMAGES         0xe5c4u
+#define ICON_DOWNLOAD       0xe0b2u
 
 /* Every icon the UI bakes; keep in sync with the defines above. Before adding
  * one, check that stb_truetype rasterizes it at 12, 16, 24 and 36 px without
@@ -41,6 +44,6 @@
     ICON_VOLUME_MUTE, ICON_CROSS, ICON_CIRCLE, ICON_TRIANGLE, ICON_SQUARE, ICON_USER, \
     ICON_LOADER, ICON_SHUFFLE, ICON_REPEAT, ICON_REPEAT_ONE, ICON_HISTORY, ICON_CAST, \
     ICON_QUEUE, ICON_PALETTE, ICON_SPARKLES, ICON_LAYOUT, ICON_REORDER, ICON_HEADPHONES,     \
-    ICON_GAMEPAD, ICON_PIN
+    ICON_GAMEPAD, ICON_PIN, ICON_INFO, ICON_IMAGES, ICON_DOWNLOAD
 
 #endif

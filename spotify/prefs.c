@@ -98,6 +98,8 @@ static pref_def defs[PREF_COUNT] = {
                                 step_tokens, 1),
     [PREF_REMOTE] = CHOICE("headphone_remote", "Headphone remote", PREF_GROUP_CONTROLS, off_on,
                            on_off_tokens, 1),
+    [PREF_CHECK_UPDATES] = CHOICE("check_updates", "Check for updates at start", PREF_HIDDEN,
+                                  off_on, on_off_tokens, 1),
     [PREF_SHUFFLE] = CHOICE("shuffle", "Shuffle", PREF_HIDDEN, off_on, NULL, 0),
     [PREF_REPEAT] = CHOICE("repeat", "Repeat", PREF_HIDDEN, repeat_names, NULL, 0),
 };

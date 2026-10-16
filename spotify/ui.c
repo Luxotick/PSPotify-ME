@@ -14,6 +14,7 @@
 #include "prefs.h"
 #include "render_gu.h"
 #include "session.h"
+#include "site.h"
 #include "webapi.h"
 #include <pspaudio.h>
 #include <pspctrl.h>
@@ -134,6 +135,22 @@ static int menu_playlist;           /* playlists[] index of a Playlists row */
 
 /* Liked Songs edits run on the loader thread. */
 static volatile unsigned like_req_seq, like_done_seq, like_seen_seq;
+
+/* The theme gallery and app updates (spotify/site.c), one job at a time on
+ * the loader thread. */
+enum { SITE_GALLERY, SITE_THEME, SITE_CHECK, SITE_INSTALL };
+static volatile unsigned site_req_seq, site_done_seq, site_seen_seq;
+static volatile int site_job, site_arg, site_result;
+#define GALLERY_MAX 32
+static site_theme gallery[GALLERY_MAX];
+static volatile int gallery_count = -1;     /* -1: not loaded, -2: failed */
+enum {
+    UPDATE_UNKNOWN, UPDATE_CHECKING, UPDATE_CURRENT, UPDATE_AVAILABLE, UPDATE_FAILED,
+    UPDATE_INSTALLING, UPDATE_INSTALLED, UPDATE_INSTALL_FAILED
+};
+static site_update update_info;
+static volatile int update_state, update_progress;
+static int update_auto;                     /* the check was the one at start */
 static spotify_track like_track;
 static volatile int like_remove, like_status;
 static unsigned int rng_state = 0x9E3779B9u;
@@ -215,6 +232,7 @@ static char pinned[MAX_PINS][24];
 static int pinned_count;
 static int playlist_view[MAX_PLAYLISTS];    /* row -> playlists[] index */
 static void arrange_playlists(void);
+static void site_finished(void);
 static int pin_index(const char *id);
 
 /* ------------------------------------------------------------ helpers */
@@ -522,6 +540,8 @@ static const struct {
 } group_info[PREF_GROUPS] = {
     [PREF_GROUP_THEMES] = { "Themes", "Colors and wallpapers from the THEMES folder",
                             ICON_PALETTE, 0xFF7C3AEDu },
+    [PREF_GROUP_GALLERY] = { "Theme gallery", "Download themes from the PSPotify ME site",
+                             ICON_IMAGES, 0xFFBE185Du },
     [PREF_GROUP_APPEARANCE] = { "Appearance", "Background, covers, text and animations",
                                 ICON_SPARKLES, 0xFFDB2777u },
     [PREF_GROUP_LAYOUT] = { "Layout", "Start screen, Now Playing and playlists", ICON_LAYOUT,
@@ -533,6 +553,7 @@ static const struct {
                               0xFF3B4FD8u },
     [PREF_GROUP_CONTROLS] = { "Controls", "Buttons and the headphone remote", ICON_GAMEPAD,
                               0xFF475569u },
+    [PREF_GROUP_ABOUT] = { "About", "Version and updates", ICON_INFO, 0xFF0F766Eu },
 };
 
 static int group_has_prefs(int g)
@@ -546,13 +567,17 @@ static void fill_groups(void)
 {
     group_count = 0;
     for (int g = 0; g < PREF_GROUPS; ++g) {
-        if (g != PREF_GROUP_THEMES && g != PREF_GROUP_CATEGORIES && !group_has_prefs(g)) continue;
+        if (g != PREF_GROUP_THEMES && g != PREF_GROUP_CATEGORIES && g != PREF_GROUP_GALLERY &&
+            g != PREF_GROUP_ABOUT && !group_has_prefs(g))
+            continue;
         ui_row *r = &group_rows[group_count];
         memset(r, 0, sizeof *r);
         copy_text(r->title, sizeof r->title, group_info[g].title);
         if (g == PREF_GROUP_THEMES && theme_active >= 0)
             snprintf(r->subtitle, sizeof r->subtitle, "%s \xC2\xB7 %d installed",
                      theme_names[theme_active], theme_count);
+        else if (g == PREF_GROUP_ABOUT && update_state == UPDATE_AVAILABLE)
+            snprintf(r->subtitle, sizeof r->subtitle, "Version %s is out", update_info.version);
         else
             copy_text(r->subtitle, sizeof r->subtitle, group_info[g].subtitle);
         r->icon = group_info[g].icon;
@@ -583,6 +608,69 @@ static void fill_options(void)
             r->playing = k == theme_active;
             option_view[n++] = k;
         }
+    } else if (g == PREF_GROUP_GALLERY) {
+        if (gallery_count == -2) {
+            ui_row *r = &option_rows[n];
+            memset(r, 0, sizeof *r);
+            copy_text(r->title, sizeof r->title, "Couldn't reach the theme site");
+            copy_text(r->subtitle, sizeof r->subtitle, "Check the Wi-Fi \xC2\xB7 select to try again");
+            r->icon = ICON_IMAGES;
+            r->color = 0xFF3A3F4Au;
+            option_view[n++] = -1;
+        }
+        const int busy = site_req_seq != site_done_seq && site_job == SITE_THEME;
+        for (int i = 0; i < gallery_count && n < OPTION_ROWS; ++i) {
+            ui_row *r = &option_rows[n];
+            memset(r, 0, sizeof *r);
+            int installed = 0;
+            for (int k = 0; k < theme_count; ++k) installed |= !strcmp(theme_names[k], gallery[i].folder);
+            copy_text(r->title, sizeof r->title, gallery[i].folder);
+            snprintf(r->subtitle, sizeof r->subtitle, "%s%s",
+                     busy && site_arg == i ? "Downloading\xE2\x80\xA6"
+                     : installed ? "Installed \xC2\xB7 select to download again" : "Select to download",
+                     gallery[i].has_wallpaper ? " \xC2\xB7 wallpaper" : "");
+            r->icon = installed ? ICON_PALETTE : ICON_DOWNLOAD;
+            r->color = gallery[i].accent;
+            r->playing = installed;
+            option_view[n++] = i;
+        }
+    } else if (g == PREF_GROUP_ABOUT) {
+        ui_row *r = &option_rows[n];
+        memset(r, 0, sizeof *r);
+        snprintf(r->title, sizeof r->title, "PSPotify ME %s", PSPOTIFY_VERSION);
+        switch (update_state) {
+        case UPDATE_CHECKING: copy_text(r->subtitle, sizeof r->subtitle, "Checking for updates\xE2\x80\xA6"); break;
+        case UPDATE_CURRENT: copy_text(r->subtitle, sizeof r->subtitle, "Up to date"); break;
+        case UPDATE_AVAILABLE:
+            snprintf(r->subtitle, sizeof r->subtitle, "Version %s is out \xC2\xB7 select to install",
+                     update_info.version);
+            break;
+        case UPDATE_FAILED:
+            copy_text(r->subtitle, sizeof r->subtitle, "Couldn't check \xC2\xB7 select to try again");
+            break;
+        case UPDATE_INSTALLING:
+            snprintf(r->subtitle, sizeof r->subtitle, "Downloading %s\xE2\x80\xA6 %d%%",
+                     update_info.version, update_progress);
+            break;
+        case UPDATE_INSTALLED:
+            snprintf(r->subtitle, sizeof r->subtitle, "%s installed \xC2\xB7 quit with START and start again",
+                     update_info.version);
+            break;
+        case UPDATE_INSTALL_FAILED:
+            copy_text(r->subtitle, sizeof r->subtitle, "Update failed, nothing changed \xC2\xB7 select to try again");
+            break;
+        default: copy_text(r->subtitle, sizeof r->subtitle, "Select to check for updates"); break;
+        }
+        r->icon = update_state == UPDATE_AVAILABLE ? ICON_DOWNLOAD : ICON_INFO;
+        r->color = update_state == UPDATE_AVAILABLE ? xmb.theme_target.accent : 0xFF0F766Eu;
+        option_view[n++] = 0;
+        r = &option_rows[n];
+        memset(r, 0, sizeof *r);
+        copy_text(r->title, sizeof r->title, pref_info(PREF_CHECK_UPDATES)->label);
+        copy_text(r->subtitle, sizeof r->subtitle, pref_value_name(PREF_CHECK_UPDATES));
+        r->icon = ICON_INFO;
+        r->color = prefs[PREF_CHECK_UPDATES] ? xmb.theme_target.accent : 0xFF3A3F4Au;
+        option_view[n++] = 1;
     } else if (g == PREF_GROUP_CATEGORIES) {
         for (int i = 0; i < UI_CATS; ++i) {
             const int c = cat_all[i];
@@ -621,9 +709,12 @@ static void fill_options(void)
     copy_text(l->header, sizeof l->header, group_info[g].title);
     l->rows = option_rows;
     l->count = n;
-    l->plain = g != PREF_GROUP_THEMES && g != PREF_GROUP_CATEGORIES;
-    l->adjustable = g != PREF_GROUP_THEMES;
+    const int own_list = g == PREF_GROUP_THEMES || g == PREF_GROUP_CATEGORIES ||
+                         g == PREF_GROUP_GALLERY || g == PREF_GROUP_ABOUT;
+    l->plain = !own_list;
+    l->adjustable = !own_list || g == PREF_GROUP_CATEGORIES;
     l->movable = g == PREF_GROUP_CATEGORIES;
+    l->loading = g == PREF_GROUP_GALLERY && gallery_count == -1;
     if (xmb.sel[UI_CAT_SETTINGS][1] >= n) xmb.sel[UI_CAT_SETTINGS][1] = n ? n - 1 : 0;
 }
 
@@ -818,6 +909,35 @@ static int load_list(const char *playlist_id, spotify_track *out)
     return n;
 }
 
+static void run_site_job(void)
+{
+    switch (site_job) {
+    case SITE_GALLERY: {
+        const int n = site_fetch_themes(gallery, GALLERY_MAX);
+        gallery_count = n < 0 ? -2 : n;
+        break;
+    }
+    case SITE_THEME: {
+        char dir[300];
+        path_in_app(dir, sizeof dir, "THEMES");
+        site_result = site_arg >= 0 && site_arg < gallery_count
+                    ? site_download_theme(&gallery[site_arg], dir) : -1;
+        break;
+    }
+    case SITE_CHECK: {
+        update_state = UPDATE_CHECKING;
+        const int r = site_check_update(&update_info);
+        update_state = r < 0 ? UPDATE_FAILED : r ? UPDATE_AVAILABLE : UPDATE_CURRENT;
+        break;
+    }
+    case SITE_INSTALL:
+        update_state = UPDATE_INSTALLING;
+        update_state = site_install_update(&update_info, spotify_config_dir(), &update_progress) == 0
+                     ? UPDATE_INSTALLED : UPDATE_INSTALL_FAILED;
+        break;
+    }
+}
+
 static int loader_thread(SceSize args, void *argp)
 {
     (void)args;
@@ -834,6 +954,12 @@ static int loader_thread(SceSize args, void *argp)
             ctx_done_count = load_context(i);
             ctx_done_seq = ctx_seq;
             log_printf("UI: %d songs in recent context %d\n", ctx_done_count, i);
+            continue;
+        }
+        unsigned site_seq = site_req_seq;
+        if (site_seq != site_done_seq) {
+            run_site_job();
+            site_done_seq = site_seq;
             continue;
         }
         unsigned like_seq = like_req_seq;
@@ -1579,6 +1705,11 @@ static void sync_state(void)
         }
     }
 
+    site_finished();
+    if (open_group == PREF_GROUP_ABOUT && update_state == UPDATE_INSTALLING) fill_options();
+    if (open_group == PREF_GROUP_GALLERY && gallery_count >= 0 && xmb.lists[UI_CAT_SETTINGS][1].loading)
+        fill_options();
+
     upload_thumb();
     assign_thumbs();
 
@@ -1901,6 +2032,86 @@ static void menu_choice(const ui_event *e)
     }
 }
 
+/* Starts a theme gallery or update job; returns 0 if one is still running. */
+static int site_request(int job, int arg)
+{
+    if (site_req_seq != site_done_seq) return 0;
+    site_job = job;
+    site_arg = arg;
+    if (job == SITE_CHECK) update_state = UPDATE_CHECKING;
+    if (job == SITE_INSTALL) {
+        update_progress = 0;
+        update_state = UPDATE_INSTALLING;
+    }
+    ++site_req_seq;
+    return 1;
+}
+
+/* Picks up a finished site job. UI thread. */
+static void site_finished(void)
+{
+    if (site_done_seq == site_seen_seq || site_done_seq != site_req_seq) return;
+    site_seen_seq = site_done_seq;
+    switch (site_job) {
+    case SITE_THEME:
+        if (site_result == 0) {
+            const char *folder = gallery[site_arg].folder;
+            scan_themes();
+            for (int i = 0; i < theme_count; ++i)
+                if (!strcmp(theme_names[i], folder)) apply_theme(i, 0);
+            save_settings();
+            ui_toast(&xmb, "Theme installed");
+        } else {
+            ui_toast(&xmb, "Couldn't download the theme");
+        }
+        break;
+    case SITE_CHECK:
+        if (update_state == UPDATE_AVAILABLE) {
+            char note[64];
+            snprintf(note, sizeof note, "Update %.15s: Settings \xE2\x86\x92 About", update_info.version);
+            ui_toast(&xmb, note);
+        } else if (!update_auto) {
+            ui_toast(&xmb, update_state == UPDATE_CURRENT ? "Up to date" : "Couldn't check for updates");
+        }
+        update_auto = 0;
+        break;
+    case SITE_INSTALL:
+        ui_toast(&xmb, update_state == UPDATE_INSTALLED ? "Updated: quit with START and start again"
+                                                        : "Update failed, nothing changed");
+        break;
+    default:
+        break;
+    }
+    fill_settings();
+}
+
+/* ✕ on a row of the theme gallery or About. */
+static void site_open(int index)
+{
+    if (open_group == PREF_GROUP_GALLERY) {
+        if (gallery_count == -2) {
+            gallery_count = -1;
+            site_request(SITE_GALLERY, 0);
+        } else if (index >= 0 && index < xmb.lists[UI_CAT_SETTINGS][1].count) {
+            const int i = option_view[index];
+            int installed = 0;
+            for (int k = 0; k < theme_count; ++k) installed |= !strcmp(theme_names[k], gallery[i].folder);
+            if (!installed && theme_count >= MAX_THEMES)
+                ui_toast(&xmb, "16 themes at most: remove one from THEMES");
+            else if (!site_request(SITE_THEME, i))
+                ui_toast(&xmb, "Still busy, try again in a moment");
+        }
+    } else if (open_group == PREF_GROUP_ABOUT && index == 0) {
+        const int s = update_state;
+        if (s == UPDATE_AVAILABLE || s == UPDATE_INSTALL_FAILED) site_request(SITE_INSTALL, 0);
+        else if (s == UPDATE_UNKNOWN || s == UPDATE_CURRENT || s == UPDATE_FAILED) site_request(SITE_CHECK, 0);
+    } else if (open_group == PREF_GROUP_ABOUT && index == 1) {
+        prefs_step(PREF_CHECK_UPDATES, 1);
+        save_settings();
+    }
+    fill_settings();
+}
+
 /* A setting changed: make it take effect now. */
 static void pref_changed(pref_id id)
 {
@@ -2041,7 +2252,14 @@ static int handle(const ui_event *e)
             if (e->index < 0 || e->index >= group_count) break;
             open_group = group_view[e->index];
             ui_open_level(&xmb, UI_CAT_SETTINGS);
+            if (open_group == PREF_GROUP_GALLERY && gallery_count < 0) {
+                gallery_count = -1;
+                site_request(SITE_GALLERY, 0);
+            }
             fill_options();
+        } else if (e->category == UI_CAT_SETTINGS &&
+                   (open_group == PREF_GROUP_GALLERY || open_group == PREF_GROUP_ABOUT)) {
+            site_open(e->index);
         } else if (e->category == UI_CAT_SETTINGS && open_group == PREF_GROUP_THEMES) {
             if (e->index < 0 || e->index >= theme_count) break;
             apply_theme(option_view[e->index], 0);
@@ -2310,6 +2528,10 @@ int spotify_ui_run(volatile int *exit_requested)
     apply_cpu();
     log_set_buffered(1);
     load_playlists();
+    if (prefs[PREF_CHECK_UPDATES]) {
+        update_auto = 1;
+        site_request(SITE_CHECK, 0);
+    }
     if (prefs[PREF_CONNECT]) connect_start(&ctx, connect_name());
 
     memory_log("pre-player-cover-threads");

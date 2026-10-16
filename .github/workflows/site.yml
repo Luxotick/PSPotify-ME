@@ -2,8 +2,10 @@ name: Theme site
 
 # Builds the theme editor and gallery (site/, scripts/build_site.py): the
 # interface compiled to WebAssembly, every theme in themes/ with a picture
-# taken by the PC preview. A push to master publishes it on GitHub Pages; a
-# pull request that adds or changes a theme only builds it, as a check.
+# taken by the PC preview, and the latest release's EBOOT for the app's
+# update check. A push to master publishes it on GitHub Pages; a pull
+# request that adds or changes a theme only builds it, as a check. A new
+# release rebuilds master's site, since Pages only deploys from master.
 on:
   push:
     branches: [master]
@@ -18,6 +20,8 @@ on:
       - ".github/workflows/site.yml"
   pull_request:
     paths: ["themes/**"]
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -33,7 +37,19 @@ env:
   EMSDK_COMMIT: 35ff8a6d150541276abbc6bae512ca90bcfbe220
 
 jobs:
+  republish:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+    steps:
+      - name: Rebuild master's site with the new release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run site.yml --repo "${{ github.repository }}" --ref master
+
   build:
+    if: github.event_name != 'release'
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
@@ -72,8 +88,24 @@ jobs:
       - name: Build the PC preview
         run: python3 scripts/build_preview.py --library site/library
 
+      - name: Fetch the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh api "repos/${{ github.repository }}/releases?per_page=10" \
+                --jq '[.[] | select(.draft == false)][0].tag_name // empty')
+          if [ -n "$tag" ]; then
+            gh release download "$tag" --repo "${{ github.repository }}" --pattern PSPotify-ME.zip --dir _release
+            echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+          fi
+
       - name: Build the site
-        run: python3 scripts/build_site.py --out _site
+        run: |
+          if [ -n "${RELEASE_TAG:-}" ]; then
+            python3 scripts/build_site.py --out _site --release-zip _release/PSPotify-ME.zip --release-tag "$RELEASE_TAG"
+          else
+            python3 scripts/build_site.py --out _site
+          fi
 
       - name: Upload the site
         uses: actions/upload-pages-artifact@v3

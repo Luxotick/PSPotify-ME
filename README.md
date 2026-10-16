@@ -72,12 +72,14 @@ In Settings, ✕ or ← / → changes the selected option. **Settings → Contro
 | Group | What you can change |
 |---|---|
 | Themes | The color theme (see below) |
+| Theme gallery | Download a theme from the [theme site](https://luxotick.github.io/PSPotify-ME/) and switch to it |
 | Appearance | Cover colors; background: plain, a blurred copy of the album cover, or the theme's wallpaper; cover shape (square, rounded, circle); text size; list style (comfortable, compact, text only); animations (smooth, fast, off); 12/24-hour clock; button hints; a visualizer on Now Playing |
 | Layout | Start screen; Now Playing layout (classic, centered, text only); playlist order (Spotify's, by name, by size) |
 | Categories | Reorder (SELECT, ↑/↓) or hide (✕) the categories across the top |
 | Sound | Equalizer presets or your own five bands; same loudness for every song (Spotify's normalization values) |
 | Playback | Sleep timer; battery saver (fewer frames while idle); CPU speed |
 | Controls | Confirm button, L/R behavior, volume step, headphone remote |
+| About | The version, and updates: the app checks at start (you can turn that off) and installs a new release in place, keeping the old EBOOT as `EBOOT.OLD` |
 
 Everything is saved to `settings.ini` next to the EBOOT, which you can also edit by hand.
 
