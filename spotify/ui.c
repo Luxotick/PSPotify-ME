@@ -718,6 +718,7 @@ static void load_settings(void)
         fclose(f);
     }
     if (!PSPOTIFY_CONNECT) prefs[PREF_CONNECT] = 0;
+    log_printf("UI: settings read\n");
     apply_equalizer();
     apply_style();
     scan_themes();
@@ -725,6 +726,7 @@ static void load_settings(void)
     for (int i = 0; i < theme_count; ++i)
         if (!strcmp(theme_names[i], wanted)) active = i;
     apply_theme(active, 1);
+    log_printf("UI: theme %d applied\n", active);
     xmb.cat = start_categories[prefs[PREF_START]];
     apply_categories();
     /* First start, or a file from an older version: write it once so every
@@ -2232,7 +2234,9 @@ static void load_playlists(void)
 
 static int setup_ui(void)
 {
+    log_printf("UI: setup: graphics\n");
     render_gu_init();
+    log_printf("UI: setup: fonts\n");
     if (font_load(FONT_REGULAR, ui_font_regular, ui_font_regular_len) < 0 ||
         font_load(FONT_BOLD, ui_font_bold, ui_font_bold_len) < 0 ||
         font_load(FONT_XBOLD, ui_font_xbold, ui_font_xbold_len) < 0 ||
@@ -2240,10 +2244,12 @@ static int setup_ui(void)
         log_printf("UI: font load failed\n");
         return -1;
     }
+    log_printf("UI: setup: interface\n");
     if (ui_init(&xmb) < 0) {
         log_printf("UI: init failed\n");
         return -1;
     }
+    log_printf("UI: setup: font atlases\n");
     /* Bake every font atlas now: baking one mid-animation drops frames.
      * Transparent draws bake without drawing anything. */
     render_gu_begin();
@@ -2258,6 +2264,7 @@ static int setup_ui(void)
     for (size_t i = 0; i < sizeof icon_sizes / sizeof icon_sizes[0]; ++i)
         font_icon(ICON_SEARCH, icon_sizes[i], 0, 0, 0);
     render_gu_end();
+    log_printf("UI: setup: settings\n");
     xmb.lists[UI_CAT_LIKED][0].loading = 1;
     load_settings();
     return 0;
