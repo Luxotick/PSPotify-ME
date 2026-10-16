@@ -16,4 +16,14 @@ typedef struct cover_palette {
 void palette_extract(const uint32_t *argb, int count, cover_palette *out);
 void theme_tint(const ui_theme *base, const cover_palette *p, ui_theme *out);
 
+/* A screen-shaped, heavily blurred copy of a size x size cover, for the
+ * "blurred cover" background: BACKDROP_W x BACKDROP_H pixels into out. */
+#define BACKDROP_W 32
+#define BACKDROP_H 18
+void palette_backdrop(const uint32_t *argb, int size, uint32_t *out);
+
+/* Cuts a size x size cover to a shape through its alpha, anti-aliased. */
+enum { COVER_SQUARE, COVER_ROUNDED, COVER_CIRCLE };
+void cover_shape(uint32_t *argb, int size, int shape);
+
 #endif

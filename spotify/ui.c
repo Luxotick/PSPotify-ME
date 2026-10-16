@@ -11,6 +11,7 @@
 #include "log.h"
 #include "memory.h"
 #include "player.h"
+#include "prefs.h"
 #include "render_gu.h"
 #include "session.h"
 #include "webapi.h"
@@ -114,7 +115,6 @@ static volatile int order_len;
 /* Songs added with "Add to queue": appended to queue[] and slotted into the
  * play order right after the playing one (after earlier additions). */
 static unsigned char queued[MAX_TRACKS];
-static int shuffle_on, repeat_mode;
 
 /* The Queue category: what plays next, in play order (queue[] indices). */
 #define QUEUE_VIEW 100
@@ -124,10 +124,11 @@ static unsigned int queue_version, queue_shown_version = ~0u;
 static int queue_shown_current = -2;
 
 /* The song a △ menu was opened for, and what its items do. */
-enum { MENU_ADD, MENU_LIKE, MENU_UNLIKE, MENU_PLAY_NOW, MENU_REMOVE };
+enum { MENU_ADD, MENU_LIKE, MENU_UNLIKE, MENU_PLAY_NOW, MENU_REMOVE, MENU_PIN, MENU_UNPIN };
 static spotify_track menu_track;
 static int menu_actions[UI_MENU_ITEMS];
 static int menu_queue_row;
+static int menu_playlist;           /* playlists[] index of a Playlists row */
 
 /* Liked Songs edits run on the loader thread. */
 static volatile unsigned like_req_seq, like_done_seq, like_seen_seq;
@@ -164,11 +165,14 @@ static int theme_count, theme_active = -1;
 #ifndef PSPOTIFY_CONNECT
 #define PSPOTIFY_CONNECT 0
 #endif
-/* Settings: Cover colors, Equalizer, [Spotify Connect,] then the themes. */
-#define SETTINGS_FIXED (2 + PSPOTIFY_CONNECT)
-static ui_row settings_rows[MAX_THEMES + SETTINGS_FIXED];
-static int eq_preset;
-static int connect_on = PSPOTIFY_CONNECT;
+/* Settings: level 0 lists the groups, level 1 the rows of the open one. */
+static ui_row group_rows[PREF_GROUPS];
+static int group_view[PREF_GROUPS], group_count;    /* row -> PREF_GROUP_* */
+#define OPTION_ROWS (PREF_COUNT > MAX_THEMES ? PREF_COUNT : MAX_THEMES)
+static ui_row option_rows[OPTION_ROWS];
+static int option_view[OPTION_ROWS];    /* row -> pref, theme or category */
+static int open_group = -1;
+static char theme_wallpaper[MAX_THEMES];    /* 1: the theme names a wallpaper */
 
 static const char *connect_name(void)
 {
@@ -176,8 +180,40 @@ static const char *connect_name(void)
          : spotify_device_model == 4 ? "PSP Go" : "PSP-3000";
 }
 static ui_theme base_theme;
-static int cover_colors_on = 1;
 static int have_palette;
+
+/* The current cover as downloaded (before cutting it to a shape), for
+ * reshaping and the blurred background. */
+static uint32_t cover_keep[COVER * COVER];
+static int cover_keep_valid;
+static r_tex *backdrop_tex;
+/* Set when the style changed: the next frame bakes its font sizes first. */
+static int prebake_pending = 1;
+
+/* Categories: all of them in the user's order, and which are hidden. */
+static const char *const cat_tokens[UI_CATS] = {
+    "search", "recent", "liked", "playlists", "now", "queue", "settings"
+};
+static const char *const cat_titles[UI_CATS] = {
+    "Search", "Recent", "Liked Songs", "Playlists", "Now Playing", "Queue", "Settings"
+};
+static const unsigned cat_icon[UI_CATS] = {
+    ICON_SEARCH, ICON_HISTORY, ICON_HEART, ICON_LIST_MUSIC, ICON_MUSIC, ICON_QUEUE, ICON_SLIDERS
+};
+static int cat_all[UI_CATS] = { 0, 1, 2, 3, 4, 5, 6 };
+static unsigned char cat_hidden[UI_CATS];
+/* PREF_START values, in order. */
+static const int start_categories[] = {
+    UI_CAT_PLAYLISTS, UI_CAT_LIKED, UI_CAT_SEARCH, UI_CAT_RECENT, UI_CAT_NOW
+};
+
+/* Playlists pinned to the top, by id; and the order they are listed in. */
+#define MAX_PINS 16
+static char pinned[MAX_PINS][24];
+static int pinned_count;
+static int playlist_view[MAX_PLAYLISTS];    /* row -> playlists[] index */
+static void arrange_playlists(void);
+static int pin_index(const char *id);
 
 /* ------------------------------------------------------------ helpers */
 
@@ -310,6 +346,7 @@ static void scan_themes(void)
         ui_theme t;
         read_theme(i, &t);
         theme_swatch[i] = t.accent;
+        theme_wallpaper[i] = t.wallpaper[0] != 0;
     }
     log_printf("UI: %d themes\n", theme_count);
 }
@@ -317,45 +354,242 @@ static void scan_themes(void)
 static void retint(int instant)
 {
     ui_theme target = base_theme;
-    if (cover_colors_on && have_palette) theme_tint(&base_theme, &cover_colors, &target);
+    if (prefs[PREF_COVER_COLORS] && have_palette) theme_tint(&base_theme, &cover_colors, &target);
     xmb.theme_target = target;
     if (instant) xmb.theme = target;
 }
 
+static void apply_style(void)
+{
+    ui_style *st = &xmb.style;
+    st->density = prefs[PREF_DENSITY];
+    st->text_size = prefs[PREF_TEXT_SIZE];
+    st->anim = prefs[PREF_ANIMATIONS];
+    st->hide_hints = prefs[PREF_HINTS];
+    st->now_layout = prefs[PREF_NOW_LAYOUT];
+    prebake_pending = 1;
+}
+
+static void apply_categories(void)
+{
+    int shown[UI_CATS], n = 0;
+    for (int i = 0; i < UI_CATS; ++i)
+        if (!cat_hidden[cat_all[i]] || cat_all[i] == UI_CAT_SETTINGS) shown[n++] = cat_all[i];
+    ui_set_categories(&xmb, shown, n);
+}
+
+/* ------------------------------------------------------------ backgrounds */
+
+/* Reads the theme's wallpaper (JPEG or PNG) and scales it to fill 480x256
+ * pixels, cropping the sides or the top and bottom to keep its shape; drawn
+ * stretched to 480x272. A 512x256 16-bit texture: 256 KB. */
+static r_tex *load_wallpaper(int theme, const char *file)
+{
+    char rel[128], path[320];
+    snprintf(rel, sizeof rel, "THEMES/%s/%s", theme_names[theme], file);
+    path_in_app(path, sizeof path, rel);
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        log_printf("UI: wallpaper %s: not found\n", rel);
+        return NULL;
+    }
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *data = size > 0 && size <= 2 * 1024 * 1024 ? malloc((size_t)size) : NULL;
+    size_t got = data ? fread(data, 1, (size_t)size, f) : 0;
+    fclose(f);
+    int w = 0, h = 0, comp = 0;
+    /* Big pictures need a lot of memory to decode; the PSP-1000 has 32 MB. */
+    const int max_side = spotify_device_model == 0 ? 960 : 1600;
+    if (!data || got != (size_t)size || !stbi_info_from_memory(data, (int)got, &w, &h, &comp) ||
+        w <= 0 || h <= 0 || w > max_side || h > max_side) {
+        log_printf("UI: wallpaper %s: unreadable or larger than %dx%d\n", rel, max_side, max_side);
+        free(data);
+        return NULL;
+    }
+    unsigned char *rgba = stbi_load_from_memory(data, (int)got, &w, &h, &comp, 4);
+    free(data);
+    if (!rgba) {
+        log_printf("UI: wallpaper %s: decode failed\n", rel);
+        return NULL;
+    }
+    enum { WW = 480, WH = 256 };
+    /* The source rectangle with the screen's 480:272 shape. */
+    int sx = 0, sy = 0, sw = w, sh = h;
+    if ((long)w * 272 > (long)h * 480) {
+        sw = h * 480 / 272;
+        sx = (w - sw) / 2;
+    } else {
+        sh = w * 272 / 480;
+        sy = (h - sh) / 2;
+    }
+    uint32_t *px = malloc(WW * WH * 4);
+    r_tex *tex = NULL;
+    if (px) {
+        for (int y = 0; y < WH; ++y) {
+            int y0 = sy + y * sh / WH, y1 = sy + (y + 1) * sh / WH;
+            if (y1 <= y0) y1 = y0 + 1;
+            for (int x = 0; x < WW; ++x) {
+                int x0 = sx + x * sw / WW, x1 = sx + (x + 1) * sw / WW;
+                if (x1 <= x0) x1 = x0 + 1;
+                unsigned r = 0, g = 0, b = 0, n = 0;
+                for (int yy = y0; yy < y1; yy += 1 + (y1 - y0) / 4)
+                    for (int xx = x0; xx < x1; xx += 1 + (x1 - x0) / 4) {
+                        const unsigned char *p = rgba + 4 * (yy * w + xx);
+                        r += p[0];
+                        g += p[1];
+                        b += p[2];
+                        ++n;
+                    }
+                px[y * WW + x] = 0xFF000000u | ((r / n) << 16) | ((g / n) << 8) | (b / n);
+            }
+        }
+        tex = r_tex_create_opaque(WW, WH, px, 1);
+        free(px);
+    }
+    stbi_image_free(rgba);
+    log_printf("UI: wallpaper %s %dx%d %s\n", rel, w, h, tex ? "loaded" : "failed");
+    return tex;
+}
+
+/* Sets the picture behind the interface from the Background setting. */
+static void update_backdrop(void)
+{
+    r_tex_destroy(backdrop_tex);
+    backdrop_tex = NULL;
+    float dim = 0.0f;
+    if (prefs[PREF_BACKGROUND] == BACKGROUND_BLURRED_COVER && cover_keep_valid) {
+        static uint32_t px[BACKDROP_W * BACKDROP_H];
+        palette_backdrop(cover_keep, COVER, px);
+        backdrop_tex = r_tex_create(BACKDROP_W, BACKDROP_H, px, 1);
+        dim = 0.6f;
+    } else if (prefs[PREF_BACKGROUND] == BACKGROUND_WALLPAPER && theme_active >= 0 &&
+               base_theme.wallpaper[0]) {
+        backdrop_tex = load_wallpaper(theme_active, base_theme.wallpaper);
+        dim = (float)base_theme.wallpaper_dim / 100.0f;
+    }
+    xmb.style.backdrop = backdrop_tex;
+    xmb.style.backdrop_dim = dim;
+}
+
+/* The Now Playing cover texture, cut to the chosen shape. */
+static void rebuild_cover(void)
+{
+    if (!cover_keep_valid) return;
+    static uint32_t shaped[COVER * COVER];
+    memcpy(shaped, cover_keep, sizeof shaped);
+    cover_shape(shaped, COVER, prefs[PREF_COVER_SHAPE]);
+    r_tex_destroy(cover_tex);
+    cover_tex = r_tex_create(COVER, COVER, shaped, 1);
+}
+
+/* ------------------------------------------------------------ settings screen */
+
+static const struct {
+    const char *title, *subtitle;
+    unsigned icon;
+    uint32_t color;
+} group_info[PREF_GROUPS] = {
+    [PREF_GROUP_THEMES] = { "Themes", "Colors and wallpapers from the THEMES folder",
+                            ICON_PALETTE, 0xFF7C3AEDu },
+    [PREF_GROUP_APPEARANCE] = { "Appearance", "Background, covers, text and animations",
+                                ICON_SPARKLES, 0xFFDB2777u },
+    [PREF_GROUP_LAYOUT] = { "Layout", "Start screen, Now Playing and playlists", ICON_LAYOUT,
+                            0xFF0E7490u },
+    [PREF_GROUP_CATEGORIES] = { "Categories", "Reorder or hide the categories", ICON_REORDER,
+                                0xFFB45309u },
+    [PREF_GROUP_SOUND] = { "Sound", "Equalizer", ICON_SLIDERS, 0xFF15803Du },
+    [PREF_GROUP_PLAYBACK] = { "Playback", "Spotify Connect", ICON_DISC, 0xFF3B4FD8u },
+    [PREF_GROUP_CONTROLS] = { "Controls", "Buttons", ICON_GAMEPAD, 0xFF475569u },
+};
+
+static int group_has_prefs(int g)
+{
+    for (int i = 0; i < PREF_COUNT; ++i)
+        if (pref_info((pref_id)i)->group == g) return 1;
+    return 0;
+}
+
+static void fill_groups(void)
+{
+    group_count = 0;
+    for (int g = 0; g < PREF_GROUPS; ++g) {
+        if (g != PREF_GROUP_THEMES && g != PREF_GROUP_CATEGORIES && !group_has_prefs(g)) continue;
+        ui_row *r = &group_rows[group_count];
+        memset(r, 0, sizeof *r);
+        copy_text(r->title, sizeof r->title, group_info[g].title);
+        if (g == PREF_GROUP_THEMES && theme_active >= 0)
+            snprintf(r->subtitle, sizeof r->subtitle, "%s \xC2\xB7 %d installed",
+                     theme_names[theme_active], theme_count);
+        else
+            copy_text(r->subtitle, sizeof r->subtitle, group_info[g].subtitle);
+        r->icon = group_info[g].icon;
+        r->color = group_info[g].color;
+        group_view[group_count++] = g;
+    }
+    ui_list *l = &xmb.lists[UI_CAT_SETTINGS][0];
+    l->rows = group_rows;
+    l->count = group_count;
+}
+
+/* The rows of the open group, refreshed after every change. */
+static void fill_options(void)
+{
+    ui_list *l = &xmb.lists[UI_CAT_SETTINGS][1];
+    const int g = open_group;
+    if (g < 0) return;
+    int n = 0;
+    if (g == PREF_GROUP_THEMES) {
+        for (int k = 0; k < theme_count; ++k) {
+            ui_row *r = &option_rows[n];
+            memset(r, 0, sizeof *r);
+            copy_text(r->title, sizeof r->title, theme_names[k]);
+            snprintf(r->subtitle, sizeof r->subtitle, "%s%s", k == theme_active ? "Active" : "Theme",
+                     theme_wallpaper[k] ? " \xC2\xB7 has a wallpaper" : "");
+            r->icon = ICON_PALETTE;
+            r->color = theme_swatch[k];
+            r->playing = k == theme_active;
+            option_view[n++] = k;
+        }
+    } else if (g == PREF_GROUP_CATEGORIES) {
+        for (int i = 0; i < UI_CATS; ++i) {
+            const int c = cat_all[i];
+            ui_row *r = &option_rows[n];
+            memset(r, 0, sizeof *r);
+            copy_text(r->title, sizeof r->title, cat_titles[c]);
+            copy_text(r->subtitle, sizeof r->subtitle, c == UI_CAT_SETTINGS ? "Always shown"
+                      : cat_hidden[c] ? "Hidden" : "Shown");
+            r->icon = cat_icon[c];
+            r->color = cat_hidden[c] && c != UI_CAT_SETTINGS ? 0xFF3A3F4Au : xmb.theme_target.accent;
+            option_view[n++] = c;
+        }
+    } else {
+        for (int i = 0; i < PREF_COUNT && n < OPTION_ROWS; ++i) {
+            const pref_def *d = pref_info((pref_id)i);
+            if (d->group != g) continue;
+            ui_row *r = &option_rows[n];
+            memset(r, 0, sizeof *r);
+            copy_text(r->title, sizeof r->title, d->label);
+            copy_text(r->subtitle, sizeof r->subtitle, pref_value_name((pref_id)i));
+            if (i == PREF_BACKGROUND && prefs[i] == BACKGROUND_WALLPAPER && !base_theme.wallpaper[0])
+                copy_text(r->subtitle, sizeof r->subtitle, "Theme wallpaper (this theme has none)");
+            option_view[n++] = i;
+        }
+    }
+    copy_text(l->header, sizeof l->header, group_info[g].title);
+    l->rows = option_rows;
+    l->count = n;
+    l->plain = g != PREF_GROUP_THEMES && g != PREF_GROUP_CATEGORIES;
+    l->adjustable = g != PREF_GROUP_THEMES;
+    l->movable = g == PREF_GROUP_CATEGORIES;
+    if (xmb.sel[UI_CAT_SETTINGS][1] >= n) xmb.sel[UI_CAT_SETTINGS][1] = n ? n - 1 : 0;
+}
+
 static void fill_settings(void)
 {
-    ui_row *r = &settings_rows[0];
-    memset(r, 0, sizeof *r);
-    snprintf(r->title, sizeof r->title, "Cover colors");
-    snprintf(r->subtitle, sizeof r->subtitle, cover_colors_on
-             ? "On \xC2\xB7 the theme follows the album art"
-             : "Off \xC2\xB7 the theme keeps its own colors");
-    r->color = cover_colors_on ? xmb.theme_target.accent : 0xFF475569u;
-    r = &settings_rows[1];
-    memset(r, 0, sizeof *r);
-    snprintf(r->title, sizeof r->title, "Equalizer: %s", player_eq_names[eq_preset]);
-    snprintf(r->subtitle, sizeof r->subtitle, "Runs on the Media Engine");
-    r->color = eq_preset ? xmb.theme_target.accent : 0xFF475569u;
-#if PSPOTIFY_CONNECT
-    r = &settings_rows[2];
-    memset(r, 0, sizeof *r);
-    snprintf(r->title, sizeof r->title, "Spotify Connect");
-    snprintf(r->subtitle, sizeof r->subtitle, connect_on
-             ? "On \xC2\xB7 control this PSP from the Spotify apps"
-             : "Off \xC2\xB7 hidden from the Spotify apps");
-    r->color = connect_on ? xmb.theme_target.accent : 0xFF475569u;
-#endif
-    for (int k = 0; k < theme_count; ++k) {
-        r = &settings_rows[k + SETTINGS_FIXED];
-        memset(r, 0, sizeof *r);
-        copy_text(r->title, sizeof r->title, theme_names[k]);
-        snprintf(r->subtitle, sizeof r->subtitle,
-                 k == theme_active ? "Theme \xC2\xB7 active" : "Theme");
-        r->color = theme_swatch[k];
-        r->playing = k == theme_active;
-    }
-    xmb.lists[UI_CAT_SETTINGS][0].rows = settings_rows;
-    xmb.lists[UI_CAT_SETTINGS][0].count = theme_count + SETTINGS_FIXED;
+    fill_groups();
+    fill_options();
 }
 
 static void save_settings(void)
@@ -364,13 +598,17 @@ static void save_settings(void)
     path_in_app(path, sizeof path, "settings.ini");
     FILE *f = fopen(path, "w");
     if (!f) return;
-    fprintf(f, "# PSPotify ME settings\ntheme = %s\ncover_colors = %s\nequalizer = %d\n"
-               "shuffle = %d\nrepeat = %d\nconnect = %s\n"
-               "# on: write spotify.log for bug reports (from the next start)\n"
-               "debug = %s\n",
-            theme_active >= 0 ? theme_names[theme_active] : "", cover_colors_on ? "on" : "off",
-            eq_preset, shuffle_on, repeat_mode, connect_on ? "on" : "off",
-            log_enabled() ? "on" : "off");
+    fprintf(f, "# PSPotify ME settings. Most can be changed in Settings on the PSP.\n");
+    fprintf(f, "theme = %s\n", theme_active >= 0 ? theme_names[theme_active] : "");
+    prefs_write(f);
+    /* Categories left to right; a '-' hides one. */
+    fprintf(f, "categories = ");
+    for (int i = 0; i < UI_CATS; ++i)
+        fprintf(f, "%s%s%s", i ? "," : "", cat_hidden[cat_all[i]] ? "-" : "", cat_tokens[cat_all[i]]);
+    fprintf(f, "\npinned = ");
+    for (int i = 0; i < pinned_count; ++i) fprintf(f, "%s%s", i ? "," : "", pinned[i]);
+    fprintf(f, "\n# on: write spotify.log for bug reports (from the next start)\n"
+               "debug = %s\n", log_enabled() ? "on" : "off");
     fclose(f);
 }
 
@@ -380,41 +618,77 @@ static void apply_theme(int i, int instant)
     if (i >= 0 && i < theme_count) read_theme(i, &base_theme);
     theme_active = i;
     retint(instant);
+    update_backdrop();
     fill_settings();
+}
+
+/* "a,-b,c": the categories in order, '-' for hidden ones. */
+static void read_categories(const char *value)
+{
+    int seq[UI_CATS], n = 0, used[UI_CATS] = { 0 };
+    unsigned char hidden[UI_CATS] = { 0 };
+    char list[160];
+    copy_text(list, sizeof list, value);
+    for (char *tok = strtok(list, ", "); tok; tok = strtok(NULL, ", ")) {
+        const int hide = tok[0] == '-';
+        for (int c = 0; c < UI_CATS; ++c)
+            if (!strcmp(cat_tokens[c], tok + hide) && !used[c] && n < UI_CATS) {
+                used[c] = 1;
+                hidden[c] = (unsigned char)hide;
+                seq[n++] = c;
+            }
+    }
+    /* Categories the file does not name (new ones) go at the end. */
+    for (int c = 0; c < UI_CATS; ++c)
+        if (!used[c]) seq[n++] = c;
+    memcpy(cat_all, seq, sizeof cat_all);
+    memcpy(cat_hidden, hidden, sizeof cat_hidden);
+    cat_hidden[UI_CAT_SETTINGS] = 0;
+}
+
+static void read_pins(const char *value)
+{
+    char list[MAX_PINS * 24];
+    copy_text(list, sizeof list, value);
+    pinned_count = 0;
+    for (char *tok = strtok(list, ", "); tok && pinned_count < MAX_PINS; tok = strtok(NULL, ", "))
+        copy_text(pinned[pinned_count++], sizeof pinned[0], tok);
 }
 
 static void load_settings(void)
 {
-    char path[300], line[128], wanted[32] = "Midnight";
+    char path[300], line[256], wanted[32] = "Midnight";
     path_in_app(path, sizeof path, "settings.ini");
+    prefs_defaults();
+    pref_set_shown(PREF_CONNECT, PSPOTIFY_CONNECT);
+    prefs[PREF_CONNECT] = PSPOTIFY_CONNECT;
     FILE *f = fopen(path, "r");
-    int has_debug = 0;
+    int has_debug = 0, has_new_keys = 0;
     if (f) {
         while (fgets(line, sizeof line, f)) {
-            char key[32], value[64];
-            if (sscanf(line, " %31[a-z_] = %63[^\r\n]", key, value) != 2) continue;
+            char key[32], value[200];
+            if (sscanf(line, " %31[a-z_] = %199[^\r\n]", key, value) != 2) continue;
             if (!strcmp(key, "theme")) copy_text(wanted, sizeof wanted, value);
-            else if (!strcmp(key, "cover_colors")) cover_colors_on = strcmp(value, "off") != 0;
-            else if (!strcmp(key, "equalizer")) eq_preset = atoi(value);
-            else if (!strcmp(key, "connect"))
-                connect_on = PSPOTIFY_CONNECT && strcmp(value, "off") != 0;
-            else if (!strcmp(key, "shuffle")) shuffle_on = atoi(value) != 0;
-            else if (!strcmp(key, "repeat")) repeat_mode = atoi(value);
+            else if (!strcmp(key, "categories")) { read_categories(value); has_new_keys = 1; }
+            else if (!strcmp(key, "pinned")) read_pins(value);
             else if (!strcmp(key, "debug")) has_debug = 1;   /* read by log_init */
+            else prefs_read(key, value);
         }
         fclose(f);
     }
-    if (eq_preset < 0 || eq_preset >= PLAYER_EQ_PRESETS) eq_preset = 0;
-    if (repeat_mode < 0 || repeat_mode > 2) repeat_mode = 0;
-    control.eq_preset = eq_preset;
+    if (!PSPOTIFY_CONNECT) prefs[PREF_CONNECT] = 0;
+    control.eq_preset = prefs[PREF_EQUALIZER];
+    apply_style();
     scan_themes();
     int active = theme_count ? 0 : -1;
     for (int i = 0; i < theme_count; ++i)
         if (!strcmp(theme_names[i], wanted)) active = i;
     apply_theme(active, 1);
-    /* First start, or a file from an older version: write it once so the
-     * debug switch is there to edit. */
-    if (!has_debug) save_settings();
+    xmb.cat = start_categories[prefs[PREF_START]];
+    apply_categories();
+    /* First start, or a file from an older version: write it once so every
+     * setting is there to edit. */
+    if (!has_debug || !has_new_keys) save_settings();
 }
 
 /* ------------------------------------------------------------ loader thread */
@@ -590,7 +864,7 @@ static void build_order(int first)
     order_len = n;
     ++queue_version;
     for (int i = 0; i < n; ++i) order[i] = i;
-    if (!shuffle_on || n < 2) return;
+    if (!prefs[PREF_SHUFFLE] || n < 2) return;
     rng_state ^= (unsigned int)sceKernelGetSystemTimeLow();
     for (int i = n - 1; i > 0; --i) {
         int j = (int)(next_random() % (unsigned int)(i + 1));
@@ -617,18 +891,18 @@ static int order_position(int idx)
  * "repeat this track" plays it again. -1 at the end of the queue. */
 static int next_index(int idx, int automatic)
 {
-    if (automatic && repeat_mode == 2) return idx;
+    if (automatic && prefs[PREF_REPEAT] == 2) return idx;
     int p = order_position(idx);
     if (p < 0) return -1;
     if (p + 1 < order_len) return order[p + 1];
-    return repeat_mode ? order[0] : -1;
+    return prefs[PREF_REPEAT] ? order[0] : -1;
 }
 
 static int prev_index(int idx)
 {
     int p = order_position(idx);
     if (p > 0) return order[p - 1];
-    return repeat_mode && order_len > 0 ? order[order_len - 1] : idx;
+    return prefs[PREF_REPEAT] && order_len > 0 ? order[order_len - 1] : idx;
 }
 
 /* Inserts a song to play after the current one and any songs queued before
@@ -1019,6 +1293,7 @@ static void assign_thumbs(void)
     if (cat != UI_CAT_LIKED && cat != UI_CAT_PLAYLISTS && cat != UI_CAT_SEARCH &&
         cat != UI_CAT_RECENT && cat != UI_CAT_QUEUE)
         return;
+    if (prefs[PREF_DENSITY] == UI_DENSITY_TEXT) return;     /* no covers to show */
     for (int lvl = 0; lvl < 2; ++lvl) {
         ui_list *list = &xmb.lists[cat][lvl];
         if (!list->rows || list->count <= 0) continue;
@@ -1031,7 +1306,7 @@ static void assign_thumbs(void)
             char url[160];
             url[0] = '\0';
             if (cat == UI_CAT_PLAYLISTS && lvl == 0) {
-                copy_text(url, sizeof url, playlists[i + 1].image);
+                copy_text(url, sizeof url, playlists[playlist_view[i]].image);
             } else if (cat == UI_CAT_RECENT && lvl == 0) {
                 const spotify_playlist *p = known_playlist(recent[i].uri);
                 if (p) copy_text(url, sizeof url, p->image);
@@ -1180,8 +1455,8 @@ static void sync_state(void)
         int upcoming = next_index(idx, 1);
         copy_text(n->next, sizeof n->next,
                   upcoming >= 0 && upcoming != idx ? queue[upcoming].name : "");
-        n->shuffle = shuffle_on;
-        n->repeat = repeat_mode;
+        n->shuffle = prefs[PREF_SHUFFLE];
+        n->repeat = prefs[PREF_REPEAT];
         if (queue_version != queue_shown_version || idx != queue_shown_current) {
             queue_shown_version = queue_version;
             queue_shown_current = idx;
@@ -1210,11 +1485,13 @@ static void sync_state(void)
 
     if (cover_pending) {
         if (!strcmp(cover_id, shown_id)) {
-            r_tex_destroy(cover_tex);
-            cover_tex = r_tex_create(COVER, COVER, cover_argb, 1);
+            memcpy(cover_keep, cover_argb, sizeof cover_keep);
+            cover_keep_valid = 1;
+            rebuild_cover();
             copy_text(cover_tex_id, sizeof cover_tex_id, cover_id);
             have_palette = 1;
             retint(0);
+            if (prefs[PREF_BACKGROUND] == BACKGROUND_BLURRED_COVER) update_backdrop();
             fill_settings();
         }
         cover_pending = 0;
@@ -1258,8 +1535,16 @@ static void sync_state(void)
     assign_thumbs();
 
     ScePspDateTime now;
-    if (sceRtcGetCurrentClockLocalTime(&now) == 0)
-        snprintf(xmb.clock, sizeof xmb.clock, "%02d:%02d", now.hour % 24, now.minute % 60);
+    if (prefs[PREF_CLOCK] == CLOCK_HIDDEN) {
+        xmb.clock[0] = '\0';
+    } else if (sceRtcGetCurrentClockLocalTime(&now) == 0) {
+        const int hour = now.hour % 24, minute = now.minute % 60;
+        if (prefs[PREF_CLOCK] == CLOCK_12H)
+            snprintf(xmb.clock, sizeof xmb.clock, "%d:%02d %s", hour % 12 ? hour % 12 : 12, minute,
+                     hour < 12 ? "AM" : "PM");
+        else
+            snprintf(xmb.clock, sizeof xmb.clock, "%02d:%02d", hour, minute);
+    }
 }
 
 /* ------------------------------------------------------------ keyboard */
@@ -1392,8 +1677,8 @@ static void handle_connect(void)
     if (!connect_poll(&c)) return;
     switch (c.type) {
     case CONNECT_PLAY:
-        if (c.shuffle >= 0) shuffle_on = c.shuffle;
-        if (c.repeat >= 0) repeat_mode = c.repeat;
+        if (c.shuffle >= 0) prefs[PREF_SHUFFLE] = c.shuffle;
+        if (c.repeat >= 0) prefs[PREF_REPEAT] = c.repeat;
         start_at_ms = c.position_ms;
         start_paused = c.paused;
         play_from(c.tracks, c.count, c.index, connect_key--, "Spotify Connect", c.context_uri);
@@ -1416,14 +1701,14 @@ static void handle_connect(void)
         control.seek_ms = c.value;
         break;
     case CONNECT_SHUFFLE:
-        shuffle_on = c.value != 0;
+        prefs[PREF_SHUFFLE] = c.value != 0;
         if (current_index >= 0) build_order(current_index);
         break;
     case CONNECT_REPEAT_CONTEXT:
-        repeat_mode = c.value ? 1 : (repeat_mode == 2 ? 2 : 0);
+        prefs[PREF_REPEAT] = c.value ? 1 : (prefs[PREF_REPEAT] == 2 ? 2 : 0);
         break;
     case CONNECT_REPEAT_TRACK:
-        repeat_mode = c.value ? 2 : (repeat_mode == 2 ? 0 : repeat_mode);
+        prefs[PREF_REPEAT] = c.value ? 2 : (prefs[PREF_REPEAT] == 2 ? 0 : prefs[PREF_REPEAT]);
         break;
     case CONNECT_VOLUME:
         set_volume(c.value);
@@ -1444,8 +1729,8 @@ static void report_connect(void)
         s.duration_ms = queue[idx].duration_ms;
         s.playing = !control.paused;
     }
-    s.shuffle = shuffle_on;
-    s.repeat = repeat_mode;
+    s.shuffle = prefs[PREF_SHUFFLE];
+    s.repeat = prefs[PREF_REPEAT];
     s.volume = xmb.volume;
     connect_report(&s);
 }
@@ -1477,6 +1762,15 @@ static int is_liked(const char *id)
 
 static void options_menu(const ui_event *e)
 {
+    if (e->category == UI_CAT_PLAYLISTS && e->level == 0) {
+        if (e->index < 0 || e->index >= playlist_count) return;
+        menu_playlist = playlist_view[e->index];
+        const int on = pin_index(playlists[menu_playlist].id) >= 0;
+        const char *item = on ? "Unpin" : "Pin to the top";
+        menu_actions[0] = on ? MENU_UNPIN : MENU_PIN;
+        ui_menu_open(&xmb, &item, 1);
+        return;
+    }
     const spotify_track *t = row_track(e->category, e->level, e->index);
     if (!t) return;
     menu_track = *t;
@@ -1535,7 +1829,89 @@ static void menu_choice(const ui_event *e)
         queue_remove(menu_queue_row);
         ui_toast(&xmb, "Removed from queue");
         break;
+    case MENU_PIN:
+    case MENU_UNPIN: {
+        const char *id = playlists[menu_playlist].id;
+        const int at = pin_index(id);
+        if (menu_actions[e->value] == MENU_UNPIN && at >= 0) {
+            memmove(pinned[at], pinned[at + 1], sizeof pinned[0] * (size_t)(pinned_count - at - 1));
+            --pinned_count;
+            ui_toast(&xmb, "Unpinned");
+        } else if (at < 0 && pinned_count < MAX_PINS) {
+            copy_text(pinned[pinned_count++], sizeof pinned[0], id);
+            ui_toast(&xmb, "Pinned to the top");
+        } else if (at < 0) {
+            ui_toast(&xmb, "Up to 16 pins");
+        }
+        arrange_playlists();
+        /* Keep the selection on the playlist that moved. */
+        for (int i = 0; i < playlist_count; ++i)
+            if (playlist_view[i] == menu_playlist) xmb.sel[UI_CAT_PLAYLISTS][0] = i;
+        save_settings();
+        break;
     }
+    }
+}
+
+/* A setting changed: make it take effect now. */
+static void pref_changed(pref_id id)
+{
+    switch (id) {
+    case PREF_COVER_COLORS:
+        retint(0);
+        break;
+    case PREF_BACKGROUND:
+        update_backdrop();
+        if (prefs[id] == BACKGROUND_WALLPAPER && !base_theme.wallpaper[0])
+            ui_toast(&xmb, "This theme has no wallpaper");
+        else if (prefs[id] == BACKGROUND_BLURRED_COVER && !cover_keep_valid)
+            ui_toast(&xmb, "Shows once a song with a cover plays");
+        break;
+    case PREF_COVER_SHAPE:
+        rebuild_cover();
+        break;
+    case PREF_TEXT_SIZE:
+    case PREF_DENSITY:
+    case PREF_ANIMATIONS:
+    case PREF_HINTS:
+    case PREF_NOW_LAYOUT:
+        apply_style();
+        break;
+    case PREF_PLAYLIST_SORT:
+        arrange_playlists();
+        break;
+    case PREF_EQUALIZER:
+        control.eq_preset = prefs[id];
+        break;
+    case PREF_CONNECT:
+        if (prefs[id]) connect_start(&ctx, connect_name());
+        else connect_stop();
+        log_printf("UI: Spotify Connect %s\n", prefs[id] ? "on" : "off");
+        break;
+    default:
+        break;
+    }
+}
+
+/* ←/→ or ✕ on a row of an open Settings group. */
+static void settings_adjust(const ui_event *e)
+{
+    if (e->category != UI_CAT_SETTINGS || e->level != 1 || open_group < 0) return;
+    if (e->index < 0 || e->index >= xmb.lists[UI_CAT_SETTINGS][1].count) return;
+    const int v = option_view[e->index];
+    if (open_group == PREF_GROUP_CATEGORIES) {
+        if (v == UI_CAT_SETTINGS) {
+            ui_toast(&xmb, "Settings stays, so you can come back");
+            return;
+        }
+        cat_hidden[v] = !cat_hidden[v];
+        apply_categories();
+    } else {
+        prefs_step((pref_id)v, e->value < 0 ? -1 : 1);
+        pref_changed((pref_id)v);
+    }
+    fill_settings();
+    save_settings();
 }
 
 /* Returns 1 when the user asked to quit. */
@@ -1550,7 +1926,8 @@ static int handle(const ui_event *e)
             snprintf(uri, sizeof uri, "spotify:user:%s:collection", ctx.cfg.username);
             play_from(liked, liked_shown, e->index, -1, "Liked Songs", uri);
         } else if (e->category == UI_CAT_PLAYLISTS && e->level == 0) {
-            int p = e->index + 1;
+            if (e->index < 0 || e->index >= playlist_count) break;
+            int p = playlist_view[e->index];
             ui_list *l = &xmb.lists[UI_CAT_PLAYLISTS][1];
             copy_text(l->header, sizeof l->header, playlists[p].name);
             l->rows = opened_rows;
@@ -1588,27 +1965,22 @@ static int handle(const ui_event *e)
             if (search_done_seq == search_req_seq && search_shown_seq == search_done_seq)
                 play_from(found, search_done_count, e->index, -10 - (int)search_done_seq,
                           "Search", "");
-        } else if (PSPOTIFY_CONNECT && e->category == UI_CAT_SETTINGS && e->index == 2) {
-            connect_on = !connect_on;
-            if (connect_on) connect_start(&ctx, connect_name());
-            else connect_stop();
-            log_printf("UI: Spotify Connect %s\n", connect_on ? "on" : "off");
-            fill_settings();
-            save_settings();
-        } else if (e->category == UI_CAT_SETTINGS && e->index == 1) {
-            eq_preset = (eq_preset + 1) % PLAYER_EQ_PRESETS;
-            control.eq_preset = eq_preset;
-            fill_settings();
-            save_settings();
-        } else if (e->category == UI_CAT_SETTINGS && e->index == 0) {
-            cover_colors_on = !cover_colors_on;
-            retint(0);
-            fill_settings();
-            save_settings();
-        } else if (e->category == UI_CAT_SETTINGS) {
-            apply_theme(e->index - SETTINGS_FIXED, 0);
+        } else if (e->category == UI_CAT_SETTINGS && e->level == 0) {
+            if (e->index < 0 || e->index >= group_count) break;
+            open_group = group_view[e->index];
+            ui_open_level(&xmb, UI_CAT_SETTINGS);
+            fill_options();
+        } else if (e->category == UI_CAT_SETTINGS && open_group == PREF_GROUP_THEMES) {
+            if (e->index < 0 || e->index >= theme_count) break;
+            apply_theme(option_view[e->index], 0);
             save_settings();
         }
+        break;
+    case UI_EV_BACK:
+        if (e->category == UI_CAT_SETTINGS) open_group = -1;
+        break;
+    case UI_EV_ADJUST:
+        settings_adjust(e);
         break;
     case UI_EV_PAUSE:
         control.paused = !control.paused;
@@ -1634,14 +2006,25 @@ static int handle(const ui_event *e)
         break;
     case UI_EV_MOVE:
         if (e->category == UI_CAT_QUEUE) queue_move(e->index, e->value);
+        if (e->category == UI_CAT_SETTINGS && open_group == PREF_GROUP_CATEGORIES) {
+            const int at = e->index, to = e->index + e->value;
+            if (at >= 0 && to >= 0 && at < UI_CATS && to < UI_CATS) {
+                const int c = cat_all[at];
+                cat_all[at] = cat_all[to];
+                cat_all[to] = c;
+                apply_categories();
+                fill_options();
+                save_settings();
+            }
+        }
         break;
     case UI_EV_SHUFFLE:
-        shuffle_on = !shuffle_on;
+        prefs[PREF_SHUFFLE] = !prefs[PREF_SHUFFLE];
         if (current_index >= 0) build_order(current_index);
         save_settings();
         break;
     case UI_EV_REPEAT:
-        repeat_mode = (repeat_mode + 1) % 3;
+        prefs[PREF_REPEAT] = (prefs[PREF_REPEAT] + 1) % 3;
         save_settings();
         break;
     case UI_EV_SEEK: {
@@ -1687,23 +2070,77 @@ static unsigned read_buttons(void)
     return b;
 }
 
+static int pin_index(const char *id)
+{
+    for (int i = 0; i < pinned_count; ++i)
+        if (!strcmp(pinned[i], id)) return i;
+    return -1;
+}
+
+/* Case-insensitive for ASCII; other bytes compare as they are. */
+static int name_order(const char *a, const char *b)
+{
+    for (;; ++a, ++b) {
+        int ca = (unsigned char)*a, cb = (unsigned char)*b;
+        if (ca >= 'A' && ca <= 'Z') ca += 32;
+        if (cb >= 'A' && cb <= 'Z') cb += 32;
+        if (ca != cb || !ca) return ca - cb;
+    }
+}
+
+/* 1 when playlist a goes before b: pinned ones first (in pin order), then
+ * by the chosen sort. */
+static int playlist_before(int a, int b)
+{
+    const spotify_playlist *pa = &playlists[a], *pb = &playlists[b];
+    int ia = pin_index(pa->id), ib = pin_index(pb->id);
+    if (ia >= 0 || ib >= 0) {
+        if (ia < 0) return 0;
+        if (ib < 0) return 1;
+        return ia < ib;
+    }
+    switch (prefs[PREF_PLAYLIST_SORT]) {
+    case SORT_NAME: return name_order(pa->name, pb->name) < 0;
+    case SORT_SIZE: return pa->total > pb->total;
+    default: return a < b;
+    }
+}
+
+/* Lists the playlists in the chosen order; rows hold no covers until the
+ * thumbnails are assigned again on the next frame. */
+static void arrange_playlists(void)
+{
+    for (int i = 0; i < playlist_count; ++i) {
+        int p = i + 1, j = i;
+        while (j > 0 && playlist_before(p, playlist_view[j - 1])) {
+            playlist_view[j] = playlist_view[j - 1];
+            --j;
+        }
+        playlist_view[j] = p;
+    }
+    for (int i = 0; i < playlist_count; ++i) {
+        const spotify_playlist *p = &playlists[playlist_view[i]];
+        ui_row *r = &playlist_rows[i];
+        memset(r, 0, sizeof *r);
+        copy_text(r->title, sizeof r->title, p->name);
+        const char *pin = pin_index(p->id) >= 0 ? "Pinned \xC2\xB7 " : "";
+        if (p->total >= 0)
+            snprintf(r->subtitle, sizeof r->subtitle, "%sPlaylist \xC2\xB7 %d songs", pin, p->total);
+        else
+            snprintf(r->subtitle, sizeof r->subtitle, "%sPlaylist", pin);
+        r->color = row_color(p->name);
+    }
+    xmb.lists[UI_CAT_PLAYLISTS][0].rows = playlist_rows;
+    xmb.lists[UI_CAT_PLAYLISTS][0].count = playlist_count;
+}
+
 static void load_playlists(void)
 {
     frame_message("Loading your library\xE2\x80\xA6", NULL);
     int n = spotify_sp_playlists(ctx.client_token, ctx.access_token, ctx.cfg.username,
                                  &playlists[1], MAX_PLAYLISTS);
     playlist_count = n > 0 ? n : 0;
-    for (int i = 0; i < playlist_count; ++i) {
-        const spotify_playlist *p = &playlists[i + 1];
-        ui_row *r = &playlist_rows[i];
-        memset(r, 0, sizeof *r);
-        copy_text(r->title, sizeof r->title, p->name);
-        if (p->total >= 0) snprintf(r->subtitle, sizeof r->subtitle, "Playlist \xC2\xB7 %d songs", p->total);
-        else snprintf(r->subtitle, sizeof r->subtitle, "Playlist");
-        r->color = row_color(p->name);
-    }
-    xmb.lists[UI_CAT_PLAYLISTS][0].rows = playlist_rows;
-    xmb.lists[UI_CAT_PLAYLISTS][0].count = playlist_count;
+    arrange_playlists();
     log_printf("UI: %d playlists\n", n);
 }
 
@@ -1766,7 +2203,7 @@ int spotify_ui_run(volatile int *exit_requested)
     set_volume(80);
     log_set_buffered(1);
     load_playlists();
-    if (connect_on) connect_start(&ctx, connect_name());
+    if (prefs[PREF_CONNECT]) connect_start(&ctx, connect_name());
 
     memory_log("pre-player-cover-threads");
     /* Priorities: UI 0x20 > player 0x22 > download 0x24 > keepalive 0x26 >
@@ -1819,6 +2256,11 @@ int spotify_ui_run(volatile int *exit_requested)
         log_tick();
 
         render_gu_begin();
+        if (prebake_pending) {
+            prebake_pending = 0;
+            ui_prebake(&xmb);
+            skip_frame_timing = 1;
+        }
         ui_draw(&xmb);
         render_gu_end();
     }

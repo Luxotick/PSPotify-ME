@@ -9,6 +9,9 @@ typedef struct r_tex r_tex;
 
 /* Full-color texture from 0xAARRGGBB words, w*h of them. */
 r_tex *r_tex_create(int w, int h, const uint32_t *argb, int smooth);
+/* Opaque picture (wallpapers): the alpha is ignored and the platform may
+ * store it with fewer bits per pixel (16 on the PSP, dithered). */
+r_tex *r_tex_create_opaque(int w, int h, const uint32_t *argb, int smooth);
 /* Coverage-only texture (font atlas, masks): drawn as white * tint. */
 r_tex *r_tex_create_alpha(int w, int h, const uint8_t *alpha, int smooth);
 void r_tex_destroy(r_tex *t);

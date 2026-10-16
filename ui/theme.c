@@ -1,5 +1,6 @@
 #include "theme.h"
 #include <ctype.h>
+#include <stdlib.h>
 #include <string.h>
 
 void theme_defaults(ui_theme *t)
@@ -11,6 +12,16 @@ void theme_defaults(ui_theme *t)
     t->text = 0xFFF2F2F2u;
     t->dim = 0xFF9EA3AEu;
     t->accent = 0xFF1ED760u;
+    t->wallpaper_dim = 40;
+    theme_resolve(t);
+}
+
+void theme_resolve(ui_theme *t)
+{
+    if (!(t->set & THEME_SET_HIGHLIGHT)) t->highlight = t->text;
+    if (!(t->set & THEME_SET_PROGRESS)) t->progress = t->accent;
+    if (!(t->set & THEME_SET_PLAYER_BAR)) t->player_bar = t->surface;
+    if (!(t->set & THEME_SET_ICONS)) t->icons = t->text;
 }
 
 static int hex_digit(int c)
@@ -43,14 +54,30 @@ static void trim(const char **s, size_t *len)
     while (*len > 0 && isspace((unsigned char)(*s)[*len - 1])) --*len;
 }
 
+static void copy_value(char *dst, size_t cap, const char *value, size_t len)
+{
+    size_t n = len < cap - 1 ? len : cap - 1;
+    memcpy(dst, value, n);
+    dst[n] = '\0';
+}
+
+static int key_is(const char *key, size_t key_len, const char *name)
+{
+    return strlen(name) == key_len && strncmp(name, key, key_len) == 0;
+}
+
 int theme_parse(ui_theme *t, const char *text, size_t len)
 {
-    static const struct { const char *key; size_t offset; } colors[] = {
-        { "background", offsetof(ui_theme, bg) },
-        { "surface", offsetof(ui_theme, surface) },
-        { "text", offsetof(ui_theme, text) },
-        { "text_dim", offsetof(ui_theme, dim) },
-        { "accent", offsetof(ui_theme, accent) },
+    static const struct { const char *key; size_t offset; unsigned set; } colors[] = {
+        { "background", offsetof(ui_theme, bg), 0 },
+        { "surface", offsetof(ui_theme, surface), 0 },
+        { "text", offsetof(ui_theme, text), 0 },
+        { "text_dim", offsetof(ui_theme, dim), 0 },
+        { "accent", offsetof(ui_theme, accent), 0 },
+        { "highlight", offsetof(ui_theme, highlight), THEME_SET_HIGHLIGHT },
+        { "progress", offsetof(ui_theme, progress), THEME_SET_PROGRESS },
+        { "player_bar", offsetof(ui_theme, player_bar), THEME_SET_PLAYER_BAR },
+        { "icons", offsetof(ui_theme, icons), THEME_SET_ICONS },
     };
     int ignored = 0;
     size_t pos = 0;
@@ -70,24 +97,43 @@ int theme_parse(ui_theme *t, const char *text, size_t len)
         trim(&key, &key_len);
         trim(&value, &value_len);
 
-        if (key_len == 4 && strncmp(key, "name", 4) == 0) {
-            size_t n = value_len < sizeof t->name - 1 ? value_len : sizeof t->name - 1;
-            memcpy(t->name, value, n);
-            t->name[n] = '\0';
+        if (key_is(key, key_len, "name")) {
+            copy_value(t->name, sizeof t->name, value, value_len);
+            continue;
+        }
+        if (key_is(key, key_len, "wallpaper")) {
+            /* A file name in the theme's folder, nothing more. */
+            if (value_len == 0 || value_len >= sizeof t->wallpaper ||
+                memchr(value, '/', value_len) || memchr(value, '\\', value_len) ||
+                memchr(value, ':', value_len))
+                ++ignored;
+            else
+                copy_value(t->wallpaper, sizeof t->wallpaper, value, value_len);
+            continue;
+        }
+        if (key_is(key, key_len, "wallpaper_dim")) {
+            char number[8];
+            copy_value(number, sizeof number, value, value_len);
+            char *stop;
+            long v = strtol(number, &stop, 10);
+            if (stop == number || *stop || v < 0 || v > 100) ++ignored;
+            else t->wallpaper_dim = (int)v;
             continue;
         }
         int known = 0;
         for (size_t i = 0; i < sizeof colors / sizeof colors[0]; ++i) {
-            if (strlen(colors[i].key) != key_len || strncmp(colors[i].key, key, key_len) != 0)
-                continue;
+            if (!key_is(key, key_len, colors[i].key)) continue;
             known = 1;
             uint32_t color;
-            if (parse_color(value, value_len, &color))
+            if (parse_color(value, value_len, &color)) {
                 *(uint32_t *)((char *)t + colors[i].offset) = color;
-            else
+                t->set |= colors[i].set;
+            } else {
                 ++ignored;
+            }
         }
         if (!known) ++ignored;
     }
+    theme_resolve(t);
     return ignored;
 }

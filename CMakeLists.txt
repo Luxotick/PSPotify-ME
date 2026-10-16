@@ -60,6 +60,7 @@ add_executable(psp-dualcore-actions
     spotify/session.c
     spotify/render_gu.c
     spotify/connect.c
+    spotify/prefs.c
     spotify/ui.c
     ui/xmb.c
     ui/font.c

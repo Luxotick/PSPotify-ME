@@ -147,6 +147,29 @@ r_tex *r_tex_create(int w, int h, const uint32_t *argb, int smooth)
     return t;
 }
 
+/* 0xAARRGGBB to the GE's 5:6:5 (red in the low bits), with a 4x4 ordered
+ * dither so gradients in wallpapers do not band. */
+r_tex *r_tex_create_opaque(int w, int h, const uint32_t *argb, int smooth)
+{
+    static const unsigned char bayer[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
+    r_tex *t = tex_alloc(w, h, 2, GU_PSM_5650, smooth);
+    if (!t) return NULL;
+    uint16_t *dst = t->data;
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            const uint32_t c = argb[y * w + x];
+            const unsigned d = bayer[(y & 3) * 4 + (x & 3)];
+            unsigned r = ((c >> 16) & 0xFFu) + (d >> 1), g = ((c >> 8) & 0xFFu) + (d >> 2),
+                     b = (c & 0xFFu) + (d >> 1);
+            r = r > 255 ? 255 : r;
+            g = g > 255 ? 255 : g;
+            b = b > 255 ? 255 : b;
+            dst[y * t->tw + x] = (uint16_t)((r >> 3) | ((g >> 2) << 5) | ((b >> 3) << 11));
+        }
+    sceKernelDcacheWritebackRange(t->data, (unsigned)(t->tw * t->th * 2));
+    return t;
+}
+
 r_tex *r_tex_create_alpha(int w, int h, const uint8_t *alpha, int smooth)
 {
     r_tex *t = tex_alloc(w, h, 1, GU_PSM_T8, smooth);
@@ -210,13 +233,20 @@ void r_tex_draw(r_tex *t, float sx, float sy, float sw, float sh,
     if (!t || w <= 0 || h <= 0 || (tint >> 24) == 0) return;
     set_texturing(1);
     bind(t);
-    tex_vertex *v = sceGuGetMemory(2 * sizeof *v);
     const uint32_t c = abgr(tint);
-    v[0] = (tex_vertex){ sx, sy, c, x, y, 0 };
-    v[1] = (tex_vertex){ sx + sw, sy + sh, c, x + w, y + h, 0 };
+    /* Wide sprites from a big texture thrash the GE's texture cache: draw
+     * them as vertical strips of at most 64 texels. */
+    const int strips = sw > 64.0f && t->tw >= 256 ? (int)((sw + 63.0f) / 64.0f) : 1;
+    tex_vertex *v = sceGuGetMemory((unsigned)(2 * strips) * sizeof *v);
+    for (int i = 0; i < strips; ++i) {
+        const float u0 = sw * (float)i / (float)strips, u1 = sw * (float)(i + 1) / (float)strips;
+        const float x0 = w * (float)i / (float)strips, x1 = w * (float)(i + 1) / (float)strips;
+        v[2 * i] = (tex_vertex){ sx + u0, sy, c, x + x0, y, 0 };
+        v[2 * i + 1] = (tex_vertex){ sx + u1, sy + sh, c, x + x1, y + h, 0 };
+    }
     sceGuDrawArray(GU_SPRITES,
                    GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D,
-                   2, 0, v);
+                   2 * strips, 0, v);
 }
 
 void r_clip(int x, int y, int w, int h)

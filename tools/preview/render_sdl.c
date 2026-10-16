@@ -39,6 +39,11 @@ r_tex *r_tex_create(int w, int h, const uint32_t *argb, int smooth)
     return wrap(tex, w, h, smooth);
 }
 
+r_tex *r_tex_create_opaque(int w, int h, const uint32_t *argb, int smooth)
+{
+    return r_tex_create(w, h, argb, smooth);
+}
+
 r_tex *r_tex_create_alpha(int w, int h, const uint8_t *alpha, int smooth)
 {
     uint32_t *argb = malloc((size_t)w * (size_t)h * 4);
