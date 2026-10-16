@@ -70,4 +70,4 @@ python -m http.server 8000 --directory _site
 
 `site/library/library.h` is a made-up library (songs, artists, playlists; the covers are the generated stand-ins), so the public site shows no real music or album art. `build_site.py` copies every `themes/` folder, takes a 480×272 picture of each with the PC preview (`--no-shots` skips that) and writes `themes/index.json` for the gallery and the editor.
 
-The editor sends its `theme.ini` text and wallpaper to the WebAssembly build (`web_set_theme`, `web_set_wallpaper` in `tools/preview/main.c`), which parses and scales them with the same code as the PSP. The PC preview shows a theme's wallpaper as if Background were set to *Theme wallpaper*. The optional 3D view needs a model in `site/models/` (see the README there).
+The editor sends its `theme.ini` text and wallpaper to the WebAssembly build (`web_set_theme`, `web_set_wallpaper` in `tools/preview/main.c`), which parses and scales them with the same code as the PSP. The PC preview shows a theme's wallpaper as if Background were set to *Theme wallpaper*.

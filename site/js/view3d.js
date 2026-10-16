@@ -1,6 +1,6 @@
 // The optional 3D view: a PSP model with the live preview canvas on its
 // screen. Only offered when the site has a model and its credit
-// (models/model.json, see site/models/README.md); three.js loads on first use.
+// (models/model.json); three.js loads on first use.
 
 const $ = (id) => document.getElementById(id);
 const THREE_URL = 'three';
