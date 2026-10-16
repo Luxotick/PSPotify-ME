@@ -161,7 +161,7 @@ static int dns_query(const char *host, const struct in_addr *server, struct in_a
     to.sin_port = PSP_HTONS(53);
     to.sin_addr = *server;
     int ret = -1;
-    if (sceNetInetSendto(sock, q, n, 0, (struct sockaddr *)&to, sizeof to) == (int)n) {
+    if (sceNetInetSendto(sock, q, n, 0, (struct sockaddr *)&to, sizeof to) == n) {
         const SceInt64 deadline = sceKernelGetSystemTimeWide() + DNS_WAIT_MS * 1000ll;
         for (;;) {
             const SceInt64 left = deadline - sceKernelGetSystemTimeWide();
@@ -171,7 +171,7 @@ static int dns_query(const char *host, const struct in_addr *server, struct in_a
             uint8_t r[512];
             struct sockaddr_in from;
             socklen_t from_len = sizeof from;
-            const int got = sceNetInetRecvfrom(sock, r, sizeof r, 0, (struct sockaddr *)&from, &from_len);
+            const int got = (int)sceNetInetRecvfrom(sock, r, sizeof r, 0, (struct sockaddr *)&from, &from_len);
             if (got < 12) continue;
             const size_t len = (size_t)got;
             /* Our answer: same id, a response, no error. */
