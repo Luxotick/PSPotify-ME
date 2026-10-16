@@ -15,7 +15,7 @@ import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build import ROOT, fetch_sources  # noqa: E402
-from ui_assets import download, fetch as fetch_fonts  # noqa: E402
+from ui_assets import FACES, download, fetch as fetch_fonts, subset_face  # noqa: E402
 
 DEPS = ROOT / ".deps"
 OUT = ROOT / "build-preview"
@@ -78,13 +78,55 @@ def build_linux():
                    check=True, cwd=ROOT)
 
 
+def build_web(library=None):
+    """WebAssembly build for a page: emcc (Emscripten) on PATH, SDL2 from its ports.
+
+    The page sends buttons with Module._web_set_buttons(bits) and reads the
+    480x272 canvas it passes as Module.canvas. library: a folder with
+    library.h and covers/ that replaces the mock tracks and playlists."""
+    out = ROOT / "build-web"
+    out.mkdir(exist_ok=True)
+    emcc = shutil.which("emcc") or shutil.which("emcc.bat")
+    if not emcc:
+        raise RuntimeError("emcc not found (install and activate emsdk)")
+    # Subset fonts, like the PSP build: the full M PLUS faces are 3.5 MB each.
+    fonts = out / "fonts"
+    fonts.mkdir(exist_ok=True)
+    for symbol, name in FACES:
+        (fonts / name).write_bytes(subset_face(symbol, name))
+    cmd = [emcc, "-O2", "-std=c11", "-sUSE_SDL=2", "-sALLOW_MEMORY_GROWTH=1",
+           "-sMODULARIZE=1", "-sEXPORT_ES6=1", "-sEXPORT_NAME=PSPotify",
+           "-sENVIRONMENT=web", "-sEXIT_RUNTIME=0",
+           "-sEXPORTED_FUNCTIONS=_main,_web_set_buttons,_web_preview,_web_play_id,_web_pos_ms,_web_set_pos_ms,_web_paused",
+           "-sEXPORTED_RUNTIME_METHODS=UTF8ToString",
+           f"-I{DEPS / 'stb'}", f"-I{ROOT / 'ui'}",
+           *[str(ROOT / s) for s in SOURCES],
+           "--preload-file", f"{ROOT / 'themes'}@/themes",
+           *[a for name in ("MPLUSRounded1c-Regular.ttf", "MPLUSRounded1c-Bold.ttf",
+                            "MPLUSRounded1c-ExtraBold.ttf", "lucide.ttf")
+             for a in ("--preload-file", f"{fonts / name}@/.deps/fonts/{name}")],
+           "-o", "build-web/pspotify.mjs"]  # relative: the path ends up in the .mjs
+    if library:
+        library = Path(library).resolve()
+        cmd[1:1] = [f'-DPREVIEW_LIBRARY="{(library / "library.h").as_posix()}"',
+                    "--preload-file", f"{library / 'covers'}@/covers"]
+    subprocess.run(cmd, check=True, cwd=ROOT)
+    print(f"built {out}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fetch-only", action="store_true")
+    parser.add_argument("--web", action="store_true", help="build for the browser with Emscripten")
+    parser.add_argument("--library", metavar="DIR",
+                        help="with --web: tracks and playlists from DIR/library.h and DIR/covers")
     args = parser.parse_args()
     fetch_sources()
     fetch_fonts()
     if args.fetch_only:
+        return
+    if args.web:
+        build_web(args.library)
         return
     if sys.platform == "win32":
         build_windows()
