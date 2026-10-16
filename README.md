@@ -9,7 +9,8 @@ A native Spotify client for the PlayStation Portable. Everything runs on the PSP
 - A **queue**: add songs with △, reorder them with SELECT; save and remove **Liked Songs** from the same menu.
 - **Full tracks** (Ogg Vorbis 160 kbps), streamed: long tracks play through a small buffer instead of filling the RAM.
 - **Seek** (hold L/R), **shuffle**, **repeat**, and an **equalizer that runs on the Media Engine**.
-- **Themes** you can write in a text file, and **Cover colors**: the theme takes its color from the album art.
+- **Themes** you can write in a text file, and **Cover colors**: the theme takes its color from the album art. Make one in the **[theme editor](https://luxotick.github.io/PSPotify-ME/)** in your browser.
+- **Make it yours** in Settings: a wallpaper or the blurred album cover behind everything, round or circular covers, compact or text-only lists, three Now Playing layouts, a visualizer, your own equalizer curve, the same loudness for every song, a sleep timer, ○ as confirm, and more.
 - Signs in once by pairing at **spotify.com/pair** (like a smart TV), then refreshes silently.
 - **TLS 1.2** on the PSP through a bundled BearSSL: the firmware's SSL stops at TLS 1.0, and every Spotify endpoint requires TLS 1.2.
 
@@ -154,7 +155,7 @@ One folder per theme, a folder name in plain letters and numbers (up to 31), and
 
 ## Status
 
-Works on hardware: pairing, the XMB interface, Liked Songs, playlists, search, recently played, covers, Cover colors and themes, full-track playback with Media Engine decoding, seeking, shuffle, repeat, the equalizer, pause, next/previous and volume. The queue and Liked Songs editing are new and still need wider testing.
+Works on hardware: pairing, the XMB interface, Liked Songs, playlists, search, recently played, covers, Cover colors and themes, full-track playback with Media Engine decoding, seeking, shuffle, repeat, the equalizer, pause, next/previous and volume, the queue and Liked Songs editing. Of the new settings, the blurred cover background, cover shapes, the visualizer, the 12-hour clock, CPU speed and the volume step have been tried on a PSP-3000.
 
 Confirmed on the PSP-1000, PSP-2000, PSP-3000 and PSP Go, thanks to volunteers with hardware I don't have.
 The app logs device, firmware and Media Engine image information before it starts the Media Engine.
@@ -162,6 +163,7 @@ BL, SD, unknown images, partial inspection failures and unsupported firmware ref
 
 ### Known issues
 
+- **New settings not tried on hardware yet:** theme wallpapers, the same loudness for every song, ○ as confirm, hiding and reordering categories, pinned playlists, the battery saver and the headphone remote. Reports welcome.
 - **New interface on other models:** the new interface has been tested on a PSP-3000 only. It uses a little more memory, which matters most on the 32 MB PSP-1000. Logs from other models are welcome.
 - **Liked Songs:** a large Liked Songs list can take a while to load completely when Spotify's servers are slow. It fills in 120 songs at a time, and opening a playlist or searching does not wait for it.
 - **Slow failures:** after a refused key the app reconnects to Spotify before giving up on the track. That wastes about 1.5 s per track and rewrites `spotify.cfg` each time.
