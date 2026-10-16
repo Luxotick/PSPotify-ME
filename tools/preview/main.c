@@ -20,6 +20,9 @@
 #else
 #include <dirent.h>
 #endif
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 #include "font.h"
 #include "palette.h"
 #include "render_sdl.h"
@@ -27,6 +30,9 @@
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
+#define STBI_ONLY_JPEG
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 
 #define W 480
 #define H 272
@@ -201,8 +207,26 @@ typedef struct mock_track {
     const char *title, *artist, *album;
     unsigned ms;
     uint32_t color;
+    const char *cover;  /* optional 64x64 JPEG under root; else a stand-in */
+    const char *preview; /* optional 30 s preview URL: the page plays it (web_preview) */
 } mock_track;
 
+/* A track with a preview plays for this long, like on Spotify's web player. */
+#define PREVIEW_MS 30000u
+
+typedef struct mock_playlist {
+    const char *name;
+    uint32_t color;
+    const char *cover;  /* optional 64x64 JPEG under root */
+    const int *tracks;  /* optional indices into TRACKS; else a rotation */
+    int count;
+} mock_playlist;
+
+#ifdef PREVIEW_LIBRARY
+/* A real library instead of the mock one: build_preview.py --library DIR
+ * passes DIR/library.h here and preloads DIR/covers. */
+#include PREVIEW_LIBRARY
+#else
 static const mock_track TRACKS[] = {
     { "When the Sun Hits", "Slowdive", "Souvlaki", 285000, 0xFF6D28D9u },
     { "Alison", "Slowdive", "Souvlaki", 230000, 0xFF6D28D9u },
@@ -215,14 +239,16 @@ static const mock_track TRACKS[] = {
     { "G\xC3\xBClpembe", "Bar\xC4\xB1\xC5\x9F Man\xC3\xA7o", "De\xC4\x9Fmesin Ya\xC4\x9Fl\xC4\xB1 Boya", 290000, 0xFFBE185Du },
     { "Sar\xC4\xB1 \xC3\x87izmeli Mehmet A\xC4\x9F" "a", "Bar\xC4\xB1\xC5\x9F Man\xC3\xA7o", "Sar\xC4\xB1 \xC3\x87izmeli Mehmet A\xC4\x9F" "a", 252000, 0xFFA16207u },
 };
-#define TRACK_COUNT ((int)(sizeof TRACKS / sizeof TRACKS[0]))
-
-static const struct { const char *name; uint32_t color; } PLAYLISTS[] = {
+static const mock_playlist PLAYLISTS[] = {
     { "Night drive", 0xFF3B4FD8u }, { "Shoegaze", 0xFF0F766Eu }, { "Gym", 0xFFB45309u },
     { "Old PSP days", 0xFF9D174Du }, { "T\xC3\xBCrk\xC3\xA7" "e klasikler", 0xFFA16207u },
     { "Focus", 0xFF475569u }, { "Road trip 2026", 0xFF15803Du },
     { "A very long playlist name that does not fit on the PSP screen", 0xFF7C3AEDu },
 };
+
+static const char *const QUERIES[] = { "slowdive", "playboi carti", "bar\xC4\xB1\xC5\x9F man\xC3\xA7o" };
+#endif
+#define TRACK_COUNT ((int)(sizeof TRACKS / sizeof TRACKS[0]))
 #define PLAYLIST_COUNT ((int)(sizeof PLAYLISTS / sizeof PLAYLISTS[0]))
 
 /* Stand-in album art: two tones of the track's color and a light disc, so
@@ -241,9 +267,37 @@ static uint32_t shade(uint32_t c, float f)
     return out;
 }
 
+static r_tex *playlist_covers[PLAYLIST_COUNT];
+
+/* A COVERxCOVER JPEG under root into ARGB pixels; 0 if it is missing or another size. */
+static int load_cover(const char *name, uint32_t *px)
+{
+    char path[1300];
+    snprintf(path, sizeof path, "%s/%s", root, name);
+    int w, h, n;
+    unsigned char *rgba = stbi_load(path, &w, &h, &n, 4);
+    if (!rgba || w != COVER || h != COVER) {
+        if (rgba) stbi_image_free(rgba);
+        printf("cover %s: cannot load\n", path);
+        return 0;
+    }
+    for (int i = 0; i < COVER * COVER; ++i)
+        px[i] = 0xFF000000u | (uint32_t)rgba[i * 4] << 16 | (uint32_t)rgba[i * 4 + 1] << 8 | rgba[i * 4 + 2];
+    stbi_image_free(rgba);
+    return 1;
+}
+
 static void make_covers(void)
 {
+    static uint32_t px[COVER * COVER];
+    for (int p = 0; p < PLAYLIST_COUNT; ++p)
+        if (PLAYLISTS[p].cover && load_cover(PLAYLISTS[p].cover, px))
+            playlist_covers[p] = r_tex_create(COVER, COVER, px, 1);
     for (int t = 0; t < TRACK_COUNT; ++t) {
+        if (TRACKS[t].cover && load_cover(TRACKS[t].cover, cover_px[t])) {
+            covers[t] = r_tex_create(COVER, COVER, cover_px[t], 1);
+            continue;
+        }
         uint32_t base = TRACKS[t].color, dark = shade(base, 0.45f), light = shade(base, 1.6f);
         for (int y = 0; y < COVER; ++y)
             for (int x = 0; x < COVER; ++x) {
@@ -274,6 +328,7 @@ static int open_map[TRACK_COUNT], search_map[8], search_kind[8];
 /* The play queue: indices into TRACKS. */
 static int queue[TRACK_COUNT], queue_len, queue_pos = -1;
 static float play_ms;
+static unsigned play_id; /* changes whenever a track starts, even the same one again */
 
 static void track_row(ui_row *r, int t)
 {
@@ -293,8 +348,10 @@ static void fill_library(ui_state *ui)
         ui_row *r = &playlist_rows[i];
         memset(r, 0, sizeof *r);
         snprintf(r->title, sizeof r->title, "%s", PLAYLISTS[i].name);
-        snprintf(r->subtitle, sizeof r->subtitle, "Playlist \xC2\xB7 %d songs", 6 + i * 7);
+        snprintf(r->subtitle, sizeof r->subtitle, "Playlist \xC2\xB7 %d songs",
+                 PLAYLISTS[i].tracks ? PLAYLISTS[i].count : 6 + i * 7);
         r->color = PLAYLISTS[i].color;
+        r->cover = playlist_covers[i];
     }
     ui->lists[UI_CAT_PLAYLISTS][0].rows = playlist_rows;
     ui->lists[UI_CAT_PLAYLISTS][0].count = PLAYLIST_COUNT;
@@ -316,9 +373,9 @@ static void fill_library(ui_state *ui)
 static void open_playlist(ui_state *ui, int p)
 {
     /* Each mock playlist is a rotation of the track pool. */
-    int n = 4 + p % (TRACK_COUNT - 3);
+    int n = PLAYLISTS[p].tracks ? PLAYLISTS[p].count : 4 + p % (TRACK_COUNT - 3);
     for (int i = 0; i < n; ++i) {
-        open_map[i] = (p * 3 + i) % TRACK_COUNT;
+        open_map[i] = PLAYLISTS[p].tracks ? PLAYLISTS[p].tracks[i] : (p * 3 + i) % TRACK_COUNT;
         track_row(&open_rows[i], open_map[i]);
     }
     ui_list *l = &ui->lists[UI_CAT_PLAYLISTS][1];
@@ -346,11 +403,12 @@ static void play_at(ui_state *ui, int pos)
     ui_now *n = &ui->now;
     n->active = 1;
     n->paused = 0;
+    ++play_id;
     snprintf(n->title, sizeof n->title, "%s", t->title);
     snprintf(n->artist, sizeof n->artist, "%s", t->artist);
     snprintf(n->album, sizeof n->album, "%s", t->album);
     snprintf(n->next, sizeof n->next, "%s", pos + 1 < queue_len ? TRACKS[queue[pos + 1]].title : "");
-    n->dur_ms = t->ms;
+    n->dur_ms = t->preview ? PREVIEW_MS : t->ms;
     n->pos_ms = 0;
     n->color = t->color;
     n->cover = covers[queue[pos]];
@@ -368,7 +426,6 @@ static void play_list(ui_state *ui, const int *tracks, int count, int start)
     play_at(ui, start);
 }
 
-static const char *const QUERIES[] = { "slowdive", "playboi carti", "bar\xC4\xB1\xC5\x9F man\xC3\xA7o" };
 static int query_index = -1;
 
 static void run_search(ui_state *ui)
@@ -514,6 +571,33 @@ static unsigned key_buttons(const Uint8 *k)
     return b;
 }
 
+#ifdef __EMSCRIPTEN__
+/* In the browser the page owns the keyboard: it sends the held PSP buttons
+ * (UI_BTN_* bits) here, from keys or clicks on the 3D model. */
+static unsigned web_buttons;
+
+EMSCRIPTEN_KEEPALIVE void web_set_buttons(unsigned buttons)
+{
+    web_buttons = buttons;
+}
+
+/* What the page needs to play the current track's preview in step with the UI. */
+static ui_state *web_ui;
+
+EMSCRIPTEN_KEEPALIVE const char *web_preview(void)
+{
+    return queue_pos >= 0 && web_ui->now.active ? TRACKS[queue[queue_pos]].preview : NULL;
+}
+
+EMSCRIPTEN_KEEPALIVE unsigned web_play_id(void) { return play_id; }
+EMSCRIPTEN_KEEPALIVE unsigned web_pos_ms(void) { return web_ui->now.pos_ms; }
+EMSCRIPTEN_KEEPALIVE int web_paused(void) { return web_ui->now.paused; }
+
+/* While the preview plays, its clock is the UI's: the bar follows the sound,
+ * buffering included. */
+EMSCRIPTEN_KEEPALIVE void web_set_pos_ms(unsigned ms) { play_ms = (float)ms; }
+#endif
+
 static unsigned key_name(const char *name)
 {
     static const struct { const char *name; unsigned bit; } names[] = {
@@ -549,6 +633,61 @@ static int save_png(SDL_Renderer *r, const char *path)
     return stbi_write_png(path, W, H, 4, px, W * 4) ? 0 : -1;
 }
 
+typedef struct loop_state {
+    SDL_Renderer *ren;
+    SDL_Texture *screen;
+    ui_state *ui;
+    Uint64 last;
+    float reload_check;
+    int running;
+} loop_state;
+
+static void frame(void *arg)
+{
+    loop_state *s = arg;
+    ui_state *ui = s->ui;
+    SDL_Event ev;
+    while (SDL_PollEvent(&ev))
+        if (ev.type == SDL_QUIT) s->running = 0;
+    Uint64 now = SDL_GetPerformanceCounter();
+    float dt = (float)(now - s->last) / (float)SDL_GetPerformanceFrequency();
+    s->last = now;
+    if (dt > 0.1f) dt = 0.1f;
+
+#ifdef __EMSCRIPTEN__
+    ui_update(ui, web_buttons, dt);
+#else
+    ui_update(ui, key_buttons(SDL_GetKeyboardState(NULL)), dt);
+#endif
+    for (int e = 0; e < ui->event_count; ++e)
+        if (handle(ui, &ui->events[e])) s->running = 0;
+    tick(ui, dt);
+
+    s->reload_check += dt;
+    if (s->reload_check > 0.5f && theme_active >= 0) {
+        s->reload_check = 0;
+        char path[1300];
+        theme_path(theme_active, path, sizeof path);
+        if (mtime(path) != theme_mtime) {
+            printf("theme %s changed, reloading\n", theme_names[theme_active]);
+            apply_theme(ui, theme_active, 0);
+        }
+    }
+
+    SDL_SetRenderTarget(s->ren, s->screen);
+    ui_draw(ui);
+    SDL_SetRenderTarget(s->ren, NULL);
+    SDL_SetRenderDrawColor(s->ren, 0, 0, 0, 255);
+    SDL_RenderClear(s->ren);
+    int ww, wh;
+    SDL_GetRendererOutputSize(s->ren, &ww, &wh);
+    int k = ww / W < wh / H ? ww / W : wh / H;
+    if (k < 1) k = 1;
+    SDL_Rect dst = { (ww - W * k) / 2, (wh - H * k) / 2, W * k, H * k };
+    SDL_RenderCopy(s->ren, s->screen, NULL, &dst);
+    SDL_RenderPresent(s->ren);
+}
+
 int main(int argc, char **argv)
 {
     const char *shot = NULL, *keys = NULL, *theme = "Midnight", *root_arg = NULL;
@@ -568,18 +707,35 @@ int main(int argc, char **argv)
         }
     }
     SDL_SetMainReady();
+#ifdef __EMSCRIPTEN__
+    /* Keys go to the page, not SDL (see web_set_buttons). The canvas is a
+     * texture on the page, so draw it 1:1 with the software renderer: its
+     * 2D canvas can be read back every frame, unlike a WebGL one. */
+    SDL_SetHint(SDL_HINT_EMSCRIPTEN_KEYBOARD_ELEMENT, "#canvas");
+    scale = 1;
+    shot = NULL;
+    if (!root_arg) root_arg = "";
+#endif
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
     }
     find_root(root_arg);
     if (scale < 1) scale = 1;
+#ifdef __EMSCRIPTEN__
+    Uint32 win_flags = 0; /* the canvas keeps its 480x272 size */
+#else
+    Uint32 win_flags = shot ? SDL_WINDOW_HIDDEN : SDL_WINDOW_RESIZABLE;
+#endif
     SDL_Window *win = SDL_CreateWindow("PSPotify Preview", SDL_WINDOWPOS_CENTERED,
-                                       SDL_WINDOWPOS_CENTERED, W * scale, H * scale,
-                                       shot ? SDL_WINDOW_HIDDEN : SDL_WINDOW_RESIZABLE);
-    SDL_Renderer *ren = win ? SDL_CreateRenderer(win, -1, shot ? SDL_RENDERER_SOFTWARE
-                                                 : SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC)
-                            : NULL;
+                                       SDL_WINDOWPOS_CENTERED, W * scale, H * scale, win_flags);
+#ifdef __EMSCRIPTEN__
+    Uint32 ren_flags = SDL_RENDERER_SOFTWARE;
+#else
+    Uint32 ren_flags = shot ? SDL_RENDERER_SOFTWARE
+                            : SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC;
+#endif
+    SDL_Renderer *ren = win ? SDL_CreateRenderer(win, -1, ren_flags) : NULL;
     if (!ren) {
         fprintf(stderr, "SDL: %s\n", SDL_GetError());
         return 1;
@@ -609,7 +765,7 @@ int main(int argc, char **argv)
         int all[TRACK_COUNT];
         for (int i = 0; i < TRACK_COUNT; ++i) all[i] = i;
         play_list(&ui, all, TRACK_COUNT, 0);
-        play_ms = 108000;
+        play_ms = (float)ui.now.dur_ms * 0.38f;
     }
     tick(&ui, 0);
 
@@ -632,46 +788,19 @@ int main(int argc, char **argv)
         return ret == 0 ? 0 : 1;
     }
 
-    Uint64 last = SDL_GetPerformanceCounter();
-    float reload_check = 0;
-    for (int running = 1; running; ) {
-        SDL_Event ev;
-        while (SDL_PollEvent(&ev))
-            if (ev.type == SDL_QUIT) running = 0;
-        Uint64 now = SDL_GetPerformanceCounter();
-        float dt = (float)(now - last) / (float)SDL_GetPerformanceFrequency();
-        last = now;
-        if (dt > 0.1f) dt = 0.1f;
-
-        ui_update(&ui, key_buttons(SDL_GetKeyboardState(NULL)), dt);
-        for (int e = 0; e < ui.event_count; ++e)
-            if (handle(&ui, &ui.events[e])) running = 0;
-        tick(&ui, dt);
-
-        reload_check += dt;
-        if (reload_check > 0.5f && theme_active >= 0) {
-            reload_check = 0;
-            char path[1300];
-            theme_path(theme_active, path, sizeof path);
-            if (mtime(path) != theme_mtime) {
-                printf("theme %s changed, reloading\n", theme_names[theme_active]);
-                apply_theme(&ui, theme_active, 0);
-            }
-        }
-
-        SDL_SetRenderTarget(ren, screen);
-        ui_draw(&ui);
-        SDL_SetRenderTarget(ren, NULL);
-        SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
-        SDL_RenderClear(ren);
-        int ww, wh;
-        SDL_GetRendererOutputSize(ren, &ww, &wh);
-        int s = ww / W < wh / H ? ww / W : wh / H;
-        if (s < 1) s = 1;
-        SDL_Rect dst = { (ww - W * s) / 2, (wh - H * s) / 2, W * s, H * s };
-        SDL_RenderCopy(ren, screen, NULL, &dst);
-        SDL_RenderPresent(ren);
-    }
+    static loop_state loop;
+    loop.ren = ren;
+    loop.screen = screen;
+    loop.ui = &ui;
+    loop.last = SDL_GetPerformanceCounter();
+    loop.running = 1;
+#ifdef __EMSCRIPTEN__
+    web_ui = &ui;
+    /* The browser drives the frames; this call does not return. */
+    emscripten_set_main_loop_arg(frame, &loop, 0, 1);
+#else
+    while (loop.running) frame(&loop);
+#endif
     SDL_Quit();
     return 0;
 }
