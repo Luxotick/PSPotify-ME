@@ -10,3 +10,5 @@
 /dist*/
 __pycache__/
 scratch/
+/_site/
+/.emsdk/

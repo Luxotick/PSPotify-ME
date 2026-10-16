@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PSPotify ME Themes</title>
+<meta name="description" content="Themes for PSPotify ME, the PSP music client: a gallery to download from and a live editor on the real interface.">
+<link rel="icon" href="img/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="css/site.css">
+<script type="module" src="js/gallery.js"></script>
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="./"><span class="logo" aria-hidden="true"></span>PSPotify ME Themes</a>
+  <nav>
+    <a href="editor.html">Editor</a>
+    <a href="#gallery">Gallery</a>
+    <a href="#share">Share yours</a>
+    <a href="https://github.com/Luxotick/PSPotify-ME" rel="noopener">GitHub</a>
+  </nav>
+</header>
+
+<main class="home">
+  <section class="hero">
+    <div>
+      <h1>Make your PSP look like yours.</h1>
+      <p class="lead">Themes for <a href="https://github.com/Luxotick/PSPotify-ME" rel="noopener">PSPotify ME</a>,
+        the native music client for the PlayStation Portable. Pick one from the gallery, or build
+        your own on the real interface, running here in your browser.</p>
+      <p class="row"><a class="button primary" href="editor.html">Open the editor</a>
+        <a class="button ghost" href="#gallery">Browse themes</a></p>
+    </div>
+  </section>
+
+  <section id="gallery">
+    <h2>Gallery</h2>
+    <p class="muted">Every theme in the repository's <code>themes/</code> folder. The pictures are
+      taken from the interface itself when the site is built.</p>
+    <div class="grid" id="grid"><p class="muted">Loading themes…</p></div>
+  </section>
+
+  <section id="install" class="prose">
+    <h2>Install a theme</h2>
+    <ol>
+      <li>Download the theme's .zip and unzip it.</li>
+      <li>Copy its <code>THEMES</code> folder to <code>PSP/GAME/PSPOTIFY/</code> on the Memory Stick,
+        next to <code>EBOOT.PBP</code>. You end up with
+        <code>PSP/GAME/PSPOTIFY/THEMES/&lt;theme&gt;/theme.ini</code>.</li>
+      <li>On the PSP, open <b>Settings → Themes</b> and pick it. If the theme has a wallpaper, set
+        <b>Settings → Appearance → Background</b> to <b>Theme wallpaper</b>.</li>
+    </ol>
+    <p class="muted">PSPotify ME lists up to 16 themes.</p>
+  </section>
+
+  <section id="share" class="prose">
+    <h2>Share your theme</h2>
+    <p>The gallery is the <code>themes/</code> folder of the
+      <a href="https://github.com/Luxotick/PSPotify-ME" rel="noopener">PSPotify ME repository</a>.
+      To add yours, open a pull request:</p>
+    <ol>
+      <li>Make the theme in the <a href="editor.html">editor</a> and download it.</li>
+      <li>Fork the repository on GitHub.</li>
+      <li>Add the folder from the zip (the one inside <code>THEMES</code>) as
+        <code>themes/&lt;Your theme&gt;/</code>: <code>theme.ini</code>, plus the wallpaper if it has one.
+        You can upload files in the browser with <b>Add file → Upload files</b>.</li>
+      <li>Open a pull request with a line about the theme.</li>
+    </ol>
+    <p>Please keep it to one folder per theme, a folder name in plain letters and numbers (up to 31),
+      and a wallpaper you made yourself or are free to share, under 2 MB (480×272 is best).
+      Once it is merged, the site rebuilds and the theme shows up here with its own preview.</p>
+  </section>
+</main>
+
+<footer class="foot">
+  <p>PSPotify ME is a fan project, not affiliated with Sony or any music service.
+    PSP is a trademark of Sony Interactive Entertainment. The songs and covers in the previews are made up.</p>
+</footer>
+</body>
+</html>

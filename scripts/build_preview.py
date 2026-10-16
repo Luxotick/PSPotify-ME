@@ -51,13 +51,19 @@ SOURCES = ["tools/preview/main.c", "tools/preview/render_sdl.c",
            "ui/stb_truetype_impl.c"]
 
 
-def build_windows():
+def library_header(library):
+    """The library.h of a --library folder, as a forward-slash path."""
+    return (Path(library).resolve() / "library.h").as_posix()
+
+
+def build_windows(library=None):
     sdl = fetch_sdl2_windows()
     OUT.mkdir(exist_ok=True)
     obj = OUT / "obj"
     obj.mkdir(exist_ok=True)
     cl = ["cl", "/nologo", "/O2", "/W3", "/std:c11", "/utf-8", "/D_CRT_SECURE_NO_WARNINGS",
           f"/I{sdl / 'include'}", f"/I{DEPS / 'stb'}", f"/I{ROOT / 'ui'}",
+          *([f'/DPREVIEW_LIBRARY="{library_header(library)}"'] if library else []),
           f"/Fo{obj}\\", f"/Fe{OUT / 'PSPotifyPreview.exe'}",
           *[str(ROOT / s) for s in SOURCES],
           "/link", f"/LIBPATH:{sdl / 'lib' / 'x64'}", "SDL2.lib", "shell32.lib",
@@ -67,12 +73,13 @@ def build_windows():
     shutil.copy2(sdl / "lib" / "x64" / "SDL2.dll", OUT / "SDL2.dll")
 
 
-def build_linux():
+def build_linux(library=None):
     OUT.mkdir(exist_ok=True)
     flags = subprocess.run(["sdl2-config", "--cflags", "--libs"], check=True,
                            capture_output=True, text=True).stdout.split()
     subprocess.run(["cc", "-O2", "-std=c11", "-Wall", "-D_DEFAULT_SOURCE",
                     f"-I{DEPS / 'stb'}", f"-I{ROOT / 'ui'}",
+                    *([f'-DPREVIEW_LIBRARY="{library_header(library)}"'] if library else []),
                     *[str(ROOT / s) for s in SOURCES],
                     "-o", str(OUT / "PSPotifyPreview"), *flags, "-lm"],
                    check=True, cwd=ROOT)
@@ -82,8 +89,10 @@ def build_web(library=None):
     """WebAssembly build for a page: emcc (Emscripten) on PATH, SDL2 from its ports.
 
     The page sends buttons with Module._web_set_buttons(bits) and reads the
-    480x272 canvas it passes as Module.canvas. library: a folder with
-    library.h and covers/ that replaces the mock tracks and playlists."""
+    480x272 canvas it passes as Module.canvas. The theme editor sends a
+    theme.ini text (web_set_theme) and wallpaper bytes (web_set_wallpaper).
+    library: a folder with library.h (and optionally covers/) that replaces
+    the mock tracks and playlists."""
     out = ROOT / "build-web"
     out.mkdir(exist_ok=True)
     emcc = shutil.which("emcc") or shutil.which("emcc.bat")
@@ -97,8 +106,10 @@ def build_web(library=None):
     cmd = [emcc, "-O2", "-std=c11", "-sUSE_SDL=2", "-sALLOW_MEMORY_GROWTH=1",
            "-sMODULARIZE=1", "-sEXPORT_ES6=1", "-sEXPORT_NAME=PSPotify",
            "-sENVIRONMENT=web", "-sEXIT_RUNTIME=0",
-           "-sEXPORTED_FUNCTIONS=_main,_web_set_buttons,_web_preview,_web_play_id,_web_pos_ms,_web_set_pos_ms,_web_paused",
-           "-sEXPORTED_RUNTIME_METHODS=UTF8ToString",
+           "-sEXPORTED_FUNCTIONS=_main,_malloc,_free,_web_set_buttons,_web_preview,_web_play_id,"
+           "_web_pos_ms,_web_set_pos_ms,_web_paused,_web_set_theme,_web_set_wallpaper,"
+           "_web_set_cover_colors",
+           "-sEXPORTED_RUNTIME_METHODS=UTF8ToString,ccall,HEAPU8",
            f"-I{DEPS / 'stb'}", f"-I{ROOT / 'ui'}",
            *[str(ROOT / s) for s in SOURCES],
            "--preload-file", f"{ROOT / 'themes'}@/themes",
@@ -108,8 +119,9 @@ def build_web(library=None):
            "-o", "build-web/pspotify.mjs"]  # relative: the path ends up in the .mjs
     if library:
         library = Path(library).resolve()
-        cmd[1:1] = [f'-DPREVIEW_LIBRARY="{(library / "library.h").as_posix()}"',
-                    "--preload-file", f"{library / 'covers'}@/covers"]
+        cmd[1:1] = [f'-DPREVIEW_LIBRARY="{library_header(library)}"']
+        if (library / "covers").is_dir():
+            cmd[1:1] = ["--preload-file", f"{library / 'covers'}@/covers"]
     subprocess.run(cmd, check=True, cwd=ROOT)
     print(f"built {out}")
 
@@ -119,7 +131,7 @@ def main():
     parser.add_argument("--fetch-only", action="store_true")
     parser.add_argument("--web", action="store_true", help="build for the browser with Emscripten")
     parser.add_argument("--library", metavar="DIR",
-                        help="with --web: tracks and playlists from DIR/library.h and DIR/covers")
+                        help="tracks and playlists from DIR/library.h (and DIR/covers) instead of the mock ones")
     args = parser.parse_args()
     fetch_sources()
     fetch_fonts()
@@ -129,9 +141,9 @@ def main():
         build_web(args.library)
         return
     if sys.platform == "win32":
-        build_windows()
+        build_windows(args.library)
     else:
-        build_linux()
+        build_linux(args.library)
     print(f"built {OUT}")
 
 

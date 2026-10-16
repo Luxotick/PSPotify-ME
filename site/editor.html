@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Theme editor · PSPotify ME Themes</title>
+<meta name="description" content="Make a theme for PSPotify ME, the PSP music client, and see it live on the real interface compiled to WebAssembly.">
+<link rel="icon" href="img/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="css/site.css">
+<!-- three.js, only fetched when the 3D view opens. -->
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+} }
+</script>
+<script type="module" src="js/editor.js"></script>
+</head>
+<body class="editor-page">
+<header class="top">
+  <a class="brand" href="./"><span class="logo" aria-hidden="true"></span>PSPotify ME Themes</a>
+  <nav>
+    <a href="editor.html" aria-current="page">Editor</a>
+    <a href="./#gallery">Gallery</a>
+    <a href="./#share">Share yours</a>
+    <a href="https://github.com/Luxotick/PSPotify-ME" rel="noopener">GitHub</a>
+  </nav>
+</header>
+
+<main class="editor">
+  <section class="stage" aria-label="Preview">
+    <div class="screen-wrap">
+      <div class="screen" id="screen" tabindex="0" aria-label="PSP screen: click, then use the keyboard">
+        <canvas id="canvas" width="480" height="272"></canvas>
+        <div class="screen-msg" id="screen-msg">Loading the interface…</div>
+        <div class="focus-hint">Click the screen to use the keyboard</div>
+      </div>
+    </div>
+
+    <div class="pad" id="pad">
+      <div class="shoulder">
+        <button type="button" data-btn="l">L</button>
+        <button type="button" data-btn="r">R</button>
+      </div>
+      <div class="dpad" aria-label="D-pad">
+        <button type="button" data-btn="up" aria-label="Up">▲</button>
+        <button type="button" data-btn="left" aria-label="Left">◀</button>
+        <button type="button" data-btn="right" aria-label="Right">▶</button>
+        <button type="button" data-btn="down" aria-label="Down">▼</button>
+      </div>
+      <div class="sys">
+        <button type="button" data-btn="select">SELECT</button>
+        <button type="button" data-btn="start">START</button>
+      </div>
+      <div class="face" aria-label="Face buttons">
+        <button type="button" data-btn="triangle" aria-label="Triangle" class="tri">△</button>
+        <button type="button" data-btn="square" aria-label="Square" class="sq">□</button>
+        <button type="button" data-btn="circle" aria-label="Circle" class="ci">○</button>
+        <button type="button" data-btn="cross" aria-label="Cross" class="cr">✕</button>
+      </div>
+    </div>
+
+    <details class="keys">
+      <summary>Keyboard</summary>
+      <table>
+        <tr><td>Arrow keys</td><td>D-pad</td><td>Z / Enter</td><td>✕</td></tr>
+        <tr><td>X / Backspace</td><td>○</td><td>A</td><td>□</td></tr>
+        <tr><td>S</td><td>△</td><td>Q / E</td><td>L / R (hold to seek)</td></tr>
+        <tr><td>Tab</td><td>SELECT</td><td>Esc</td><td>START</td></tr>
+      </table>
+    </details>
+
+    <div class="stage-tools">
+      <label class="check"><input type="checkbox" id="cover-colors"> Cover colors
+        <span class="muted">(tints the theme from the playing cover, as the PSP setting does)</span></label>
+      <button type="button" class="ghost" id="open-3d" hidden>3D view</button>
+    </div>
+    <p class="muted small">The songs, artists and covers here are made up. The picture is the real
+      PSPotify ME interface code, compiled to WebAssembly, reading your theme with the same parser as the PSP.</p>
+  </section>
+
+  <section class="panel" aria-label="Theme">
+    <div class="field">
+      <label for="start-from">Start from</label>
+      <select id="start-from"><option value="">Loading themes…</option></select>
+    </div>
+    <div class="field">
+      <label for="name">Name</label>
+      <input id="name" maxlength="31" autocomplete="off" spellcheck="false">
+      <p class="muted small" id="folder-note"></p>
+    </div>
+
+    <h2>Colors</h2>
+    <div id="main-colors" class="colors"></div>
+
+    <details class="details-colors" id="details-box">
+      <summary>Detail colors <span class="muted">(optional)</span></summary>
+      <div id="detail-colors" class="colors"></div>
+    </details>
+
+    <h2>Wallpaper <span class="muted">(optional)</span></h2>
+    <div class="wallpaper">
+      <div class="wall-thumb" id="wall-thumb"><span>None</span></div>
+      <div class="wall-controls">
+        <label class="button ghost" for="wall-file">Choose a picture…</label>
+        <input type="file" id="wall-file" accept="image/jpeg,image/png,image/webp,image/gif" hidden>
+        <button type="button" class="ghost" id="wall-remove" hidden>Remove</button>
+        <p class="muted small" id="wall-note">JPEG or PNG; it stays in your browser. Best at 480×272.</p>
+      </div>
+    </div>
+    <div class="field">
+      <label for="dim">Background over the wallpaper <output id="dim-out">40%</output></label>
+      <input type="range" id="dim" min="0" max="100" step="1" value="40">
+    </div>
+
+    <div id="warnings" class="warnings" aria-live="polite"></div>
+
+    <h2>theme.ini</h2>
+    <pre class="ini" id="ini"></pre>
+    <div class="row">
+      <button type="button" class="primary" id="download">Download theme (.zip)</button>
+      <button type="button" class="ghost" id="copy">Copy theme.ini</button>
+    </div>
+    <div class="install" id="install">
+      <p><b>Install:</b> unzip and copy the <code>THEMES</code> folder to
+        <code>PSP/GAME/PSPOTIFY/</code> on the Memory Stick, next to <code>EBOOT.PBP</code>,
+        so you end up with <code>PSP/GAME/PSPOTIFY/THEMES/<span id="install-folder">My theme</span>/theme.ini</code>.
+        Then pick it under <b>Settings → Themes</b>.</p>
+      <p id="install-wall" hidden>For the wallpaper, set <b>Settings → Appearance → Background</b> to
+        <b>Theme wallpaper</b>.</p>
+    </div>
+  </section>
+</main>
+
+<dialog id="view3d" class="view3d">
+  <div class="view3d-bar">
+    <span>3D view <span class="muted">· drag to turn, click the buttons</span></span>
+    <button type="button" class="ghost" id="close-3d">Close</button>
+  </div>
+  <div class="view3d-stage" id="view3d-stage"></div>
+  <p class="credit muted small" id="model-credit"></p>
+</dialog>
+
+<footer class="foot">
+  <p>PSPotify ME is a fan project, not affiliated with Sony or any music service.
+    PSP is a trademark of Sony Interactive Entertainment.
+    <span id="foot-credit"></span></p>
+</footer>
+</body>
+</html>

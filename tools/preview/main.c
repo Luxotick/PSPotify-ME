@@ -31,6 +31,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 #define STBI_ONLY_JPEG
+#define STBI_ONLY_PNG
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
@@ -82,7 +83,8 @@ static int load_font(font_face face, const char *name)
 
 /* ------------------------------------------------------------ themes */
 
-#define MAX_THEMES 16
+/* More than the PSP lists (16), so the site can picture every gallery theme. */
+#define MAX_THEMES 64
 static char theme_names[MAX_THEMES][64];
 static int theme_count, theme_active = -1;
 static long long theme_mtime;
@@ -181,24 +183,87 @@ static void scan_themes(void)
         }
 }
 
+/* The theme's wallpaper, shown as if Settings > Background were "Theme wallpaper". */
+static r_tex *wallpaper_tex;
+
+/* A JPEG or PNG cropped to the screen's shape and scaled to 480x256, then
+ * drawn stretched to 480x272: the same steps as load_wallpaper() in
+ * spotify/ui.c, so a wallpaper looks here as it does on the PSP. len 0
+ * removes the wallpaper. */
+static void set_wallpaper(ui_state *ui, const uint8_t *data, size_t len)
+{
+    r_tex_destroy(wallpaper_tex);
+    wallpaper_tex = NULL;
+    int w = 0, h = 0, comp = 0;
+    unsigned char *rgba = len ? stbi_load_from_memory(data, (int)len, &w, &h, &comp, 4) : NULL;
+    if (rgba && w > 0 && h > 0) {
+        enum { WW = 480, WH = 256 };
+        int sx = 0, sy = 0, sw = w, sh = h;
+        if ((long)w * 272 > (long)h * 480) {
+            sw = h * 480 / 272;
+            sx = (w - sw) / 2;
+        } else {
+            sh = w * 272 / 480;
+            sy = (h - sh) / 2;
+        }
+        static uint32_t px[WW * WH];
+        for (int y = 0; y < WH; ++y) {
+            int y0 = sy + y * sh / WH, y1 = sy + (y + 1) * sh / WH;
+            if (y1 <= y0) y1 = y0 + 1;
+            for (int x = 0; x < WW; ++x) {
+                int x0 = sx + x * sw / WW, x1 = sx + (x + 1) * sw / WW;
+                if (x1 <= x0) x1 = x0 + 1;
+                unsigned r = 0, g = 0, b = 0, n = 0;
+                for (int yy = y0; yy < y1; yy += 1 + (y1 - y0) / 4)
+                    for (int xx = x0; xx < x1; xx += 1 + (x1 - x0) / 4) {
+                        const unsigned char *p = rgba + 4 * (yy * w + xx);
+                        r += p[0];
+                        g += p[1];
+                        b += p[2];
+                        ++n;
+                    }
+                px[y * WW + x] = 0xFF000000u | ((r / n) << 16) | ((g / n) << 8) | (b / n);
+            }
+        }
+        wallpaper_tex = r_tex_create_opaque(WW, WH, px, 1);
+    } else if (len) {
+        printf("wallpaper: cannot decode\n");
+    }
+    if (rgba) stbi_image_free(rgba);
+    ui->style.backdrop = wallpaper_tex;
+    ui->style.backdrop_dim = (float)base_theme.wallpaper_dim / 100.0f;
+}
+
+static void load_theme_text(ui_state *ui, const char *name, const char *text, size_t len, int instant)
+{
+    theme_defaults(&base_theme);
+    int ignored = theme_parse(&base_theme, text, len);
+    if (ignored) printf("theme %s: %d line(s) ignored\n", name, ignored);
+    ui->style.backdrop_dim = (float)base_theme.wallpaper_dim / 100.0f;
+    retint(ui, instant);
+    fill_settings(ui);
+}
+
 static void apply_theme(ui_state *ui, int i, int instant)
 {
     char path[1300];
     theme_path(i, path, sizeof path);
     size_t len;
     char *text = (char *)read_file(path, &len);
-    theme_defaults(&base_theme);
-    if (text) {
-        int ignored = theme_parse(&base_theme, text, len);
-        if (ignored) printf("theme %s: %d line(s) ignored\n", theme_names[i], ignored);
-        free(text);
-    } else {
-        printf("theme %s: cannot read %s\n", theme_names[i], path);
-    }
+    if (!text) printf("theme %s: cannot read %s\n", theme_names[i], path);
     theme_active = i;
     theme_mtime = mtime(path);
-    retint(ui, instant);
-    fill_settings(ui);
+    load_theme_text(ui, theme_names[i], text ? text : "", text ? len : 0, instant);
+    free(text);
+    uint8_t *wall = NULL;
+    size_t wall_len = 0;
+    if (base_theme.wallpaper[0]) {
+        snprintf(path, sizeof path, "%s/themes/%s/%s", root, theme_names[i], base_theme.wallpaper);
+        wall = read_file(path, &wall_len);
+        if (!wall) printf("wallpaper %s: not found\n", path);
+    }
+    set_wallpaper(ui, wall, wall ? wall_len : 0);
+    free(wall);
 }
 
 /* ------------------------------------------------------------ mock library */
@@ -596,6 +661,27 @@ EMSCRIPTEN_KEEPALIVE int web_paused(void) { return web_ui->now.paused; }
 /* While the preview plays, its clock is the UI's: the bar follows the sound,
  * buffering included. */
 EMSCRIPTEN_KEEPALIVE void web_set_pos_ms(unsigned ms) { play_ms = (float)ms; }
+
+/* The theme editor: a theme.ini text from the page, parsed by the same
+ * theme_parse() as on the PSP, shown at once. It is no theme of the list. */
+EMSCRIPTEN_KEEPALIVE void web_set_theme(const char *ini)
+{
+    theme_active = -1;
+    load_theme_text(web_ui, "editor", ini, strlen(ini), 1);
+}
+
+/* The wallpaper's file contents (JPEG or PNG); len 0 removes it. */
+EMSCRIPTEN_KEEPALIVE void web_set_wallpaper(const uint8_t *data, int len)
+{
+    set_wallpaper(web_ui, data, len > 0 ? (size_t)len : 0);
+}
+
+EMSCRIPTEN_KEEPALIVE void web_set_cover_colors(int on)
+{
+    cover_colors = on != 0;
+    retint(web_ui, 0);
+    fill_settings(web_ui);
+}
 #endif
 
 static unsigned key_name(const char *name)

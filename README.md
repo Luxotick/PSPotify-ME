@@ -112,6 +112,18 @@ A wallpaper shows when **Settings → Appearance → Background** is set to *The
 
 To try themes without the PSP, the [PC preview](docs/PREVIEW.md) reloads `theme.ini` the moment you save it.
 
+### Theme editor and gallery
+
+The [theme site](https://luxotick.github.io/PSPotify-ME/) runs this interface in the browser (WebAssembly, the same theme parser as the PSP): pick colors and a wallpaper, watch the screen change, and download the theme as a zip ready for `PSP/GAME/PSPOTIFY/`. Its gallery is this repository's `themes/` folder.
+
+**Share your theme** with a pull request:
+
+1. Make it in the editor and download it.
+2. Fork this repository and add the folder from inside the zip's `THEMES` as `themes/<Your theme>/`: `theme.ini`, plus the wallpaper if it has one (GitHub's *Add file → Upload files* works).
+3. Open a pull request. The check builds the site with your theme, and once it is merged the gallery shows it with a preview picture.
+
+One folder per theme, a folder name in plain letters and numbers (up to 31), and a wallpaper you made or may share, under 2 MB (480×272 is best). The site is built from `site/` by `scripts/build_site.py` (see [docs/PREVIEW.md](docs/PREVIEW.md#theme-site)).
+
 ## How it works
 
 ```

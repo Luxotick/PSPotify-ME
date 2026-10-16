@@ -1,0 +1,104 @@
+name: Theme site
+
+# Builds the theme editor and gallery (site/, scripts/build_site.py): the
+# interface compiled to WebAssembly, every theme in themes/ with a picture
+# taken by the PC preview. Pull requests only build it (so a new theme is
+# checked); a push to master also publishes it on GitHub Pages.
+on:
+  push:
+    branches: [master]
+    paths:
+      - "themes/**"
+      - "site/**"
+      - "ui/**"
+      - "tools/preview/**"
+      - "scripts/build_preview.py"
+      - "scripts/build_site.py"
+      - "scripts/ui_assets.py"
+      - ".github/workflows/site.yml"
+  pull_request:
+    paths:
+      - "themes/**"
+      - "site/**"
+      - "ui/**"
+      - "tools/preview/**"
+      - "scripts/build_preview.py"
+      - "scripts/build_site.py"
+      - "scripts/ui_assets.py"
+      - ".github/workflows/site.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  EMSDK_VERSION: "6.0.12"
+  # The emsdk repository at the 6.0.12 tag.
+  EMSDK_COMMIT: 35ff8a6d150541276abbc6bae512ca90bcfbe220
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install build host helpers
+        # fontTools subsets the UI fonts; SDL2 builds the PC preview that takes the pictures.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libsdl2-dev
+          pip install fonttools==4.55.0
+
+      - name: Cache emsdk
+        uses: actions/cache@v4
+        with:
+          path: |
+            .emsdk
+            ~/.cache/emscripten
+          key: emsdk-${{ env.EMSDK_COMMIT }}-${{ env.EMSDK_VERSION }}
+
+      - name: Install emsdk ${{ env.EMSDK_VERSION }}
+        run: |
+          if [ ! -d .emsdk ]; then
+            git clone https://github.com/emscripten-core/emsdk.git .emsdk
+            git -C .emsdk checkout --detach "$EMSDK_COMMIT"
+            .emsdk/emsdk install "$EMSDK_VERSION"
+          fi
+          test "$(git -C .emsdk rev-parse HEAD)" = "$EMSDK_COMMIT"
+          .emsdk/emsdk activate "$EMSDK_VERSION"
+
+      - name: Build the browser preview
+        run: |
+          source .emsdk/emsdk_env.sh
+          python3 scripts/build_preview.py --web --library site/library
+
+      - name: Build the PC preview
+        run: python3 scripts/build_preview.py --library site/library
+
+      - name: Build the site
+        run: python3 scripts/build_site.py --out _site
+
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publish on GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
