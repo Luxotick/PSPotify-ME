@@ -112,6 +112,7 @@ target_link_libraries(psp-dualcore-actions
     psppower
     pspaudiocodec
     psputility
+    psphprm
     pspwlan
 )
 target_link_options(psp-dualcore-actions PRIVATE

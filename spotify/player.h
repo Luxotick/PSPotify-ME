@@ -23,11 +23,19 @@ typedef struct {
     volatile int seek_ms;
     /* Set by the caller from the metadata; aims seeks within the file. */
     volatile unsigned int duration_ms;
-    /* Equalizer preset, an index into player_eq_names (0 = off). */
+    /* Equalizer preset, an index into player_eq_names (0 = off), or
+     * PLAYER_EQ_CUSTOM for the gains in eq_custom (dB at 60, 230, 910,
+     * 3600 and 14000 Hz). Bump eq_version after changing eq_custom. */
     volatile int eq_preset;
+    volatile int eq_custom[5];
+    volatile unsigned int eq_version;
+    /* 1: play every track at the same loudness, from the gain Spotify
+     * stores in each file's header. */
+    volatile int normalize;
 } player_control;
 
 #define PLAYER_EQ_PRESETS 7
+#define PLAYER_EQ_CUSTOM PLAYER_EQ_PRESETS
 extern const char *const player_eq_names[PLAYER_EQ_PRESETS];
 
 /* Streams one Spotify Ogg Vorbis file: downloads from the first working CDN

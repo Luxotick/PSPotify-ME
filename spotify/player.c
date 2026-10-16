@@ -139,6 +139,37 @@ static int ring_push(ring_state *ring, const int16_t *pcm, int frames, int volum
     return 0;
 }
 
+/* Spotify's header holds ReplayGain-style values at offset 144: track gain
+ * (dB), track peak, album gain, album peak, as little-endian floats. The
+ * gain is applied through the output volume, never above full scale. */
+#define NORMALIZATION_OFFSET 144
+
+static float read_le_float(const uint8_t *p)
+{
+    union { uint32_t u; float f; } v;
+    v.u = (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+    return v.f;
+}
+
+static float normalization_factor(const uint8_t *header)
+{
+    const float gain_db = read_le_float(header + NORMALIZATION_OFFSET);
+    const float peak = read_le_float(header + NORMALIZATION_OFFSET + 4);
+    if (!(gain_db > -40.0f && gain_db < 40.0f)) return 1.0f;    /* also NaN */
+    float factor = powf(10.0f, gain_db / 20.0f);
+    if (peak > 0.0f && peak <= 2.0f && factor * peak > 1.0f) factor = 1.0f / peak;
+    log_printf("PLAYER: normalization %.2f dB, peak %.3f -> x%.2f\n", (double)gain_db,
+               (double)peak, (double)factor);
+    return factor;
+}
+
+static int output_volume(const player_control *control, float norm)
+{
+    if (!control->normalize) return control->volume;
+    float v = (float)control->volume * norm;
+    return v > (float)PSP_AUDIO_VOLUME_MAX ? PSP_AUDIO_VOLUME_MAX : (int)v;
+}
+
 static void ring_flush(ring_state *ring, int volume)
 {
     if (ring->fill == 0) return;
@@ -157,15 +188,22 @@ static uint32_t me_pending_flush;
 
 /* Peaking filters (RBJ cookbook), computed on the SC; the ME only runs them.
  * Called between jobs, when the ME is idle. */
-static void eq_configure(int preset, unsigned int rate)
+static void eq_configure(int preset, const volatile int *custom, unsigned int rate)
 {
-    if (preset <= 0 || preset >= PLAYER_EQ_PRESETS || rate == 0) {
+    float gains[ME_EQ_BANDS];
+    int flat = 1;
+    for (int b = 0; b < ME_EQ_BANDS; ++b) {
+        gains[b] = preset == PLAYER_EQ_CUSTOM ? (float)custom[b]
+                 : preset > 0 && preset < PLAYER_EQ_PRESETS ? eq_gains[preset][b] : 0.0f;
+        if (gains[b] != 0.0f) flat = 0;
+    }
+    if (flat || rate == 0) {
         me_job.eq_on = 0;
         return;
     }
     float boost = 0;
     for (int b = 0; b < ME_EQ_BANDS; ++b) {
-        const float gain = eq_gains[preset][b];
+        const float gain = gains[b];
         if (gain > boost) boost = gain;
         const float a = powf(10.0f, gain / 40.0f);
         const float w0 = 2.0f * 3.14159265f * eq_freqs[b] / (float)rate;
@@ -401,6 +439,8 @@ int spotify_play_ogg(const char *urls, unsigned int url_stride, int url_count,
     size_t pos = SPOTIFY_OGG_HEADER, audio_start = SPOTIFY_OGG_HEADER;
     f.consumed = pos;
     int eq_applied = -1;
+    unsigned int eq_version = 0;
+    float norm = 1.0f;
     int channel = -1;
     unsigned int waits = 0;
     ring_state ring = { 0, 0, 0 };
@@ -432,6 +472,7 @@ int spotify_play_ogg(const char *urls, unsigned int url_stride, int url_count,
         sceKernelDelayThread(10000);
     }
 
+    norm = normalization_factor(f.buf);
     stb_vorbis_info info = stb_vorbis_get_info(v);
     log_printf("PLAYER: %u Hz, %d ch, decoder memory %u KB\n", info.sample_rate, info.channels,
                (unsigned int)((info.setup_memory_required + info.temp_memory_required) / 1024));
@@ -456,9 +497,10 @@ int spotify_play_ogg(const char *urls, unsigned int url_stride, int url_count,
         size_t window = ME_WINDOW_MIN;
         for (;;) {
             if (control->stop) { ret = PLAYER_STOPPED; break; }
-            if (control->eq_preset != eq_applied) {
+            if (control->eq_preset != eq_applied || control->eq_version != eq_version) {
                 eq_applied = control->eq_preset;
-                eq_configure(eq_applied, info.sample_rate);
+                eq_version = control->eq_version;
+                eq_configure(eq_applied, control->eq_custom, info.sample_rate);
             }
             if (control->seek_ms >= 0) {
                 const unsigned int target = (unsigned int)control->seek_ms;
@@ -506,7 +548,7 @@ int spotify_play_ogg(const char *urls, unsigned int url_stride, int url_count,
                 if (!f.open && f.buffered == have) break;   /* end of file */
                 ++waits;
                 if (prev_frames) {   /* keep audio going while waiting */
-                    ret = ring_push(&ring, me_pcm[cur ^ 1], prev_frames, control->volume);
+                    ret = ring_push(&ring, me_pcm[cur ^ 1], prev_frames, output_volume(control, norm));
                     if (ret < 0) goto out;
                     prev_frames = 0;
                 }
@@ -525,7 +567,7 @@ int spotify_play_ogg(const char *urls, unsigned int url_stride, int url_count,
             first = 0;
             /* The SC plays the previous frame while the ME decodes this one. */
             if (prev_frames) {
-                ret = ring_push(&ring, me_pcm[cur ^ 1], prev_frames, control->volume);
+                ret = ring_push(&ring, me_pcm[cur ^ 1], prev_frames, output_volume(control, norm));
                 prev_frames = 0;
                 control->position_ms = (unsigned int)(ring.frames * 1000ull / info.sample_rate);
                 if (ret < 0) { me_collect(&me_wait_us); goto out; }
@@ -554,11 +596,11 @@ int spotify_play_ogg(const char *urls, unsigned int url_stride, int url_count,
             }
         }
         if (ret == 0 && prev_frames) {
-            ret = ring_push(&ring, me_pcm[cur ^ 1], prev_frames, control->volume);
+            ret = ring_push(&ring, me_pcm[cur ^ 1], prev_frames, output_volume(control, norm));
             if (ret < 0) goto out;
         }
     }
-    if (ret == 0) ring_flush(&ring, control->volume);
+    if (ret == 0) ring_flush(&ring, output_volume(control, norm));
     log_printf("PLAYER: %s, %u s, %u waits, SC waited %u ms on ME\n",
                ret == PLAYER_STOPPED ? "stopped" : "finished",
                (unsigned int)(ring.frames / info.sample_rate), waits,

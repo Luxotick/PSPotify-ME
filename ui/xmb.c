@@ -187,6 +187,13 @@ void ui_open_level(ui_state *ui, int cat)
 void ui_update(ui_state *ui, unsigned buttons, float dt)
 {
     ui->event_count = 0;
+    if (ui->style.swap_confirm) {
+        /* Everything below treats ✕ as confirm and ○ as back. */
+        const unsigned cross = buttons & UI_BTN_CROSS, circle = buttons & UI_BTN_CIRCLE;
+        buttons &= ~(unsigned)(UI_BTN_CROSS | UI_BTN_CIRCLE);
+        if (cross) buttons |= UI_BTN_CIRCLE;
+        if (circle) buttons |= UI_BTN_CROSS;
+    }
     const unsigned pressed = buttons & ~ui->buttons, released = ~buttons & ui->buttons;
     const unsigned dirs = buttons & (UI_BTN_UP | UI_BTN_DOWN | UI_BTN_LEFT | UI_BTN_RIGHT);
     unsigned repeat = 0;
@@ -219,8 +226,9 @@ void ui_update(ui_state *ui, unsigned buttons, float dt)
 
     if (cat == UI_CAT_NOW) {
         int volume = ui->volume;
-        if (act & UI_BTN_UP) volume += 5;
-        if (act & UI_BTN_DOWN) volume -= 5;
+        const int step = ui->style.volume_step > 0 ? ui->style.volume_step : 5;
+        if (act & UI_BTN_UP) volume += step;
+        if (act & UI_BTN_DOWN) volume -= step;
         volume = volume < 0 ? 0 : volume > 100 ? 100 : volume;
         if (volume != ui->volume) {
             ui->volume = volume;
@@ -250,21 +258,29 @@ void ui_update(ui_state *ui, unsigned buttons, float dt)
     if ((pressed & UI_BTN_SELECT) && list->movable && list->count > 0) ui->moving = 1;
     if (pressed & UI_BTN_START) emit(ui, UI_EV_QUIT, 0);
 
-    /* L/R: a tap changes track, holding seeks. */
-    if (pressed & (UI_BTN_L | UI_BTN_R)) {
-        ui->lr_held = 0.0f;
-        ui->lr_seek_at = SEEK_HOLD;
-    } else if (buttons & (UI_BTN_L | UI_BTN_R)) {
-        ui->lr_held += dt;
-        if (ui->lr_held >= ui->lr_seek_at) {
-            emit(ui, UI_EV_SEEK, (buttons & UI_BTN_R) ? 1 : -1);
-            ui->lr_seek_at += 0.25f;
+    /* L/R: a tap changes track and holding seeks, or only one of the two. */
+    const int lr_mode = ui->style.lr_mode;
+    if (lr_mode == UI_LR_SKIP) {
+        if (pressed & (UI_BTN_L | UI_BTN_R))
+            emit(ui, (pressed & UI_BTN_R) ? UI_EV_NEXT : UI_EV_PREV, 0);
+    } else {
+        const float hold = lr_mode == UI_LR_SEEK ? 0.0f : SEEK_HOLD;
+        if (pressed & (UI_BTN_L | UI_BTN_R)) {
+            ui->lr_held = 0.0f;
+            ui->lr_seek_at = hold;
         }
+        if (buttons & (UI_BTN_L | UI_BTN_R)) {
+            if (!(pressed & (UI_BTN_L | UI_BTN_R))) ui->lr_held += dt;
+            if (ui->lr_held >= ui->lr_seek_at) {
+                emit(ui, UI_EV_SEEK, (buttons & UI_BTN_R) ? 1 : -1);
+                ui->lr_seek_at += 0.25f;
+            }
+        }
+        if ((released & (UI_BTN_L | UI_BTN_R)) && ui->lr_held < SEEK_HOLD && lr_mode == UI_LR_BOTH)
+            emit(ui, (released & UI_BTN_R) ? UI_EV_NEXT : UI_EV_PREV, 0);
+        else if (released & (UI_BTN_L | UI_BTN_R))
+            emit(ui, UI_EV_SEEK, 0);    /* end of a seek: jump to the previewed time */
     }
-    if ((released & (UI_BTN_L | UI_BTN_R)) && ui->lr_held < SEEK_HOLD)
-        emit(ui, (released & UI_BTN_R) ? UI_EV_NEXT : UI_EV_PREV, 0);
-    else if (released & (UI_BTN_L | UI_BTN_R))
-        emit(ui, UI_EV_SEEK, 0);    /* end of a seek: jump to the previewed time */
 
     if (adjust) {
         /* ←/→ change the value instead of the category; ○ leaves first. */
@@ -349,16 +365,19 @@ static void draw_top(const ui_state *ui)
     float x = 14;
     int cat = ui->cat;
     const int lvl = ui->level[cat];
+    /* With ○ as confirm the two icons trade places. */
+    const unsigned ok = ui->style.swap_confirm ? ICON_CIRCLE : ICON_CROSS;
+    const unsigned back = ui->style.swap_confirm ? ICON_CROSS : ICON_CIRCLE;
     if (ui->moving) {
         x += font_draw(FONT_REGULAR, 10, x, 3, t->dim, "\xE2\x86\x91\xE2\x86\x93 Move") + 10;
-        hint(&x, ICON_CROSS, "Done", t->dim);
+        hint(&x, ok, "Done", t->dim);
         cat = -1;
     } else if (ui->style.hide_hints) {
         cat = -1;
     } else if (ui->lists[cat][lvl].adjustable) {
         x += font_draw(FONT_REGULAR, 10, x, 3, t->dim, "\xE2\x86\x90\xE2\x86\x92") + 3;
-        hint(&x, ICON_CROSS, "Change", t->dim);
-        hint(&x, ICON_CIRCLE, "Back", t->dim);
+        hint(&x, ok, "Change", t->dim);
+        hint(&x, back, "Back", t->dim);
         if (ui->lists[cat][lvl].movable)
             x += font_draw(FONT_REGULAR, 10, x, 3, t->dim, "SELECT Move") + 10;
         cat = -1;
@@ -367,37 +386,37 @@ static void draw_top(const ui_state *ui)
     case -1:
         break;
     case UI_CAT_QUEUE:
-        hint(&x, ICON_CROSS, "Play", t->dim);
+        hint(&x, ok, "Play", t->dim);
         hint(&x, ICON_TRIANGLE, "Options", t->dim);
         x += font_draw(FONT_REGULAR, 10, x, 3, t->dim, "SELECT Move") + 10;
         break;
     case UI_CAT_SEARCH:
-        hint(&x, ICON_CROSS, "Play", t->dim);
+        hint(&x, ok, "Play", t->dim);
         hint(&x, ICON_SQUARE, "Search", t->dim);
         hint(&x, ICON_TRIANGLE, "Options", t->dim);
         break;
     case UI_CAT_NOW:
         hint(&x, ICON_SQUARE, ui->now.paused ? "Play" : "Pause", t->dim);
-        hint(&x, ICON_CROSS, "Repeat", t->dim);
+        hint(&x, ok, "Repeat", t->dim);
         hint(&x, ICON_TRIANGLE, "Shuffle", t->dim);
         x += font_draw(FONT_REGULAR, 10, x, 3, t->dim, "\xE2\x86\x91\xE2\x86\x93 Vol") + 10;
         break;
     case UI_CAT_RECENT:
-        hint(&x, ICON_CROSS, lvl == 0 ? "Open" : "Play", t->dim);
-        if (lvl > 0) hint(&x, ICON_CIRCLE, "Back", t->dim);
+        hint(&x, ok, lvl == 0 ? "Open" : "Play", t->dim);
+        if (lvl > 0) hint(&x, back, "Back", t->dim);
         break;
     case UI_CAT_SETTINGS:
-        hint(&x, ICON_CROSS, lvl == 0 ? "Open" : "Select", t->dim);
-        if (lvl > 0) hint(&x, ICON_CIRCLE, "Back", t->dim);
+        hint(&x, ok, lvl == 0 ? "Open" : "Select", t->dim);
+        if (lvl > 0) hint(&x, back, "Back", t->dim);
         break;
     case UI_CAT_PLAYLISTS:
-        hint(&x, ICON_CROSS, lvl == 0 ? "Open" : "Play", t->dim);
-        if (lvl > 0) hint(&x, ICON_CIRCLE, "Back", t->dim);
+        hint(&x, ok, lvl == 0 ? "Open" : "Play", t->dim);
+        if (lvl > 0) hint(&x, back, "Back", t->dim);
         hint(&x, ICON_TRIANGLE, lvl == 0 ? "Pin" : "Options", t->dim);
         break;
     default:
-        hint(&x, ICON_CROSS, "Play", t->dim);
-        if (lvl > 0) hint(&x, ICON_CIRCLE, "Back", t->dim);
+        hint(&x, ok, "Play", t->dim);
+        if (lvl > 0) hint(&x, back, "Back", t->dim);
         hint(&x, ICON_TRIANGLE, "Options", t->dim);
         break;
     }

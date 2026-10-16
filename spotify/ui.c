@@ -17,6 +17,8 @@
 #include "webapi.h"
 #include <pspaudio.h>
 #include <pspctrl.h>
+#include <pspdisplay.h>
+#include <psphprm.h>
 #include <pspiofilemgr.h>
 #include <psppower.h>
 #include <psprtc.h>
@@ -367,8 +369,33 @@ static void apply_style(void)
     st->anim = prefs[PREF_ANIMATIONS];
     st->hide_hints = prefs[PREF_HINTS];
     st->now_layout = prefs[PREF_NOW_LAYOUT];
+    st->swap_confirm = prefs[PREF_CONFIRM];
+    st->lr_mode = prefs[PREF_LR];
+    static const int steps[] = { 2, 5, 10 };
+    st->volume_step = steps[prefs[PREF_VOLUME_STEP]];
     prebake_pending = 1;
 }
+
+/* The equalizer settings to the player; it reconfigures between frames. */
+static void apply_equalizer(void)
+{
+    for (int b = 0; b < 5; ++b) control.eq_custom[b] = pref_number((pref_id)(PREF_EQ_60 + b));
+    control.eq_preset = prefs[PREF_EQUALIZER];
+    control.normalize = prefs[PREF_NORMALIZE];
+    ++control.eq_version;
+}
+
+static void apply_cpu(void)
+{
+    static const int cpu[] = { 333, 266, 222 }, bus[] = { 166, 133, 111 };
+    const int i = prefs[PREF_CPU];
+    scePowerSetClockFrequency(cpu[i], cpu[i], bus[i]);
+    log_printf("UI: CPU %d MHz\n", cpu[i]);
+}
+
+/* Sleep timer: minutes per PREF_SLEEP value, and when it runs out. */
+static const int sleep_minutes[] = { 0, 15, 30, 45, 60, 90 };
+static SceUInt64 sleep_deadline;
 
 static void apply_categories(void)
 {
@@ -499,9 +526,11 @@ static const struct {
                             0xFF0E7490u },
     [PREF_GROUP_CATEGORIES] = { "Categories", "Reorder or hide the categories", ICON_REORDER,
                                 0xFFB45309u },
-    [PREF_GROUP_SOUND] = { "Sound", "Equalizer", ICON_SLIDERS, 0xFF15803Du },
-    [PREF_GROUP_PLAYBACK] = { "Playback", "Spotify Connect", ICON_DISC, 0xFF3B4FD8u },
-    [PREF_GROUP_CONTROLS] = { "Controls", "Buttons", ICON_GAMEPAD, 0xFF475569u },
+    [PREF_GROUP_SOUND] = { "Sound", "Equalizer and loudness", ICON_SLIDERS, 0xFF15803Du },
+    [PREF_GROUP_PLAYBACK] = { "Playback", "Sleep timer, battery and CPU speed", ICON_DISC,
+                              0xFF3B4FD8u },
+    [PREF_GROUP_CONTROLS] = { "Controls", "Buttons and the headphone remote", ICON_GAMEPAD,
+                              0xFF475569u },
 };
 
 static int group_has_prefs(int g)
@@ -574,6 +603,16 @@ static void fill_options(void)
             copy_text(r->subtitle, sizeof r->subtitle, pref_value_name((pref_id)i));
             if (i == PREF_BACKGROUND && prefs[i] == BACKGROUND_WALLPAPER && !base_theme.wallpaper[0])
                 copy_text(r->subtitle, sizeof r->subtitle, "Theme wallpaper (this theme has none)");
+            if (i == PREF_SLEEP && prefs[i] && sleep_deadline) {
+                const SceUInt64 now = sceKernelGetSystemTimeWide();
+                const unsigned left = sleep_deadline > now
+                    ? (unsigned)((sleep_deadline - now) / 60000000u) + 1u : 0u;
+                snprintf(r->subtitle, sizeof r->subtitle, "%s \xC2\xB7 pauses in %u min",
+                         pref_value_name((pref_id)i), left);
+            }
+            if (i >= PREF_EQ_60 && i <= PREF_EQ_14K && prefs[PREF_EQUALIZER] != PLAYER_EQ_CUSTOM)
+                snprintf(r->subtitle, sizeof r->subtitle, "%s \xC2\xB7 used by Custom",
+                         pref_value_name((pref_id)i));
             option_view[n++] = i;
         }
     }
@@ -677,7 +716,7 @@ static void load_settings(void)
         fclose(f);
     }
     if (!PSPOTIFY_CONNECT) prefs[PREF_CONNECT] = 0;
-    control.eq_preset = prefs[PREF_EQUALIZER];
+    apply_equalizer();
     apply_style();
     scan_themes();
     int active = theme_count ? 0 : -1;
@@ -1612,7 +1651,7 @@ static int ask_text(const char *title, char *out, size_t cap)
     memset(&params, 0, sizeof params);
     params.base.size = sizeof params;
     sceUtilityGetSystemParamInt(PSP_SYSTEMPARAM_ID_INT_LANGUAGE, &params.base.language);
-    params.base.buttonSwap = PSP_UTILITY_ACCEPT_CROSS;
+    params.base.buttonSwap = prefs[PREF_CONFIRM] ? PSP_UTILITY_ACCEPT_CIRCLE : PSP_UTILITY_ACCEPT_CROSS;
     params.base.graphicsThread = 0x11;
     params.base.accessThread = 0x13;
     params.base.fontThread = 0x12;
@@ -1881,7 +1920,30 @@ static void pref_changed(pref_id id)
         arrange_playlists();
         break;
     case PREF_EQUALIZER:
-        control.eq_preset = prefs[id];
+    case PREF_NORMALIZE:
+        apply_equalizer();
+        break;
+    case PREF_EQ_60:
+    case PREF_EQ_230:
+    case PREF_EQ_910:
+    case PREF_EQ_3600:
+    case PREF_EQ_14K:
+        /* Shaping a band means the user wants their own curve. */
+        prefs[PREF_EQUALIZER] = PLAYER_EQ_CUSTOM;
+        apply_equalizer();
+        break;
+    case PREF_CPU:
+        apply_cpu();
+        break;
+    case PREF_SLEEP:
+        sleep_deadline = prefs[id] ? sceKernelGetSystemTimeWide() +
+                         (SceUInt64)sleep_minutes[prefs[id]] * 60000000u : 0;
+        if (prefs[id]) ui_toast(&xmb, "Playback pauses when the timer ends");
+        break;
+    case PREF_CONFIRM:
+    case PREF_LR:
+    case PREF_VOLUME_STEP:
+        apply_style();
         break;
     case PREF_CONNECT:
         if (prefs[id]) connect_start(&ctx, connect_name());
@@ -2050,6 +2112,22 @@ static int handle(const ui_event *e)
     return 0;
 }
 
+/* Play/pause and next/previous on the headphone remote (PSP-2000 and later).
+ * Its volume keys already set the system volume. */
+static void handle_remote(void)
+{
+    static u32 held;
+    u32 key = 0;
+    if (!prefs[PREF_REMOTE] || sceHprmPeekCurrentKey(&key) < 0) return;
+    const u32 pressed = key & ~held;
+    held = key;
+    if (key & PSP_HPRM_HOLD) return;
+    if ((pressed & PSP_HPRM_PLAYPAUSE) && current_index >= 0) control.paused = !control.paused;
+    if (pressed & PSP_HPRM_FORWARD) start_track(next_index(current_index, 0));
+    if (pressed & PSP_HPRM_BACK)
+        start_track(control.position_ms > 3000 ? current_index : prev_index(current_index));
+}
+
 static unsigned read_buttons(void)
 {
     SceCtrlData pad;
@@ -2201,6 +2279,7 @@ int spotify_ui_run(volatile int *exit_requested)
         return 0;
     }
     set_volume(80);
+    apply_cpu();
     log_set_buffered(1);
     load_playlists();
     if (prefs[PREF_CONNECT]) connect_start(&ctx, connect_name());
@@ -2221,7 +2300,8 @@ int spotify_ui_run(volatile int *exit_requested)
     if (thumb_thid >= 0) sceKernelStartThread(thumb_thid, 0, NULL);
     if (thid >= 0) sceKernelStartThread(thid, 0, NULL);
 
-    SceUInt64 last = sceKernelGetSystemTimeWide(), stats_start = last;
+    SceUInt64 last = sceKernelGetSystemTimeWide(), stats_start = last, last_input = last;
+    unsigned idle_frames = 0;
     unsigned frames = 0, slow_frames = 0, worst_us = 0;
     for (int quit = 0; !quit && !*exit_requested; ) {
         SceUInt64 now = sceKernelGetSystemTimeWide();
@@ -2244,7 +2324,17 @@ int spotify_ui_run(volatile int *exit_requested)
             frames = slow_frames = worst_us = 0;
         }
 
-        ui_update(&xmb, read_buttons(), dt);
+        const unsigned buttons = read_buttons();
+        if (buttons) last_input = now;
+        ui_update(&xmb, buttons, dt);
+        handle_remote();
+        if (sleep_deadline && now >= sleep_deadline) {
+            sleep_deadline = 0;
+            prefs[PREF_SLEEP] = 0;
+            control.paused = 1;
+            ui_toast(&xmb, "Sleep timer: paused");
+            fill_settings();
+        }
         for (int i = 0; i < xmb.event_count && !quit; ++i) quit = handle(&xmb.events[i]);
         if (skip_frame_timing) {
             skip_frame_timing = 0;
@@ -2255,6 +2345,13 @@ int spotify_ui_run(volatile int *exit_requested)
         report_connect();
         log_tick();
 
+        /* Battery saver: after 20 s without a button, draw every third frame. */
+        const int idle = prefs[PREF_BATTERY] && now - last_input > 20000000u && !xmb.menu.open;
+        if (idle && idle_frames++ % 3 != 0) {
+            sceDisplayWaitVblankStartCB();
+            continue;
+        }
+        if (!idle) idle_frames = 0;
         render_gu_begin();
         if (prebake_pending) {
             prebake_pending = 0;

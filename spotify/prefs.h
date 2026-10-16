@@ -35,8 +35,22 @@ typedef enum {
     PREF_PLAYLIST_SORT,
     /* Sound */
     PREF_EQUALIZER,
+    PREF_EQ_60,             /* the five custom equalizer bands, in order */
+    PREF_EQ_230,
+    PREF_EQ_910,
+    PREF_EQ_3600,
+    PREF_EQ_14K,
+    PREF_NORMALIZE,
     /* Playback */
+    PREF_SLEEP,
+    PREF_BATTERY,
+    PREF_CPU,
     PREF_CONNECT,
+    /* Controls */
+    PREF_CONFIRM,
+    PREF_LR,
+    PREF_VOLUME_STEP,
+    PREF_REMOTE,
     /* Remembered between runs, changed elsewhere */
     PREF_SHUFFLE,
     PREF_REPEAT,
@@ -47,6 +61,8 @@ typedef enum {
 enum { BACKGROUND_PLAIN, BACKGROUND_BLURRED_COVER, BACKGROUND_WALLPAPER };
 enum { CLOCK_24H, CLOCK_12H, CLOCK_HIDDEN };
 enum { SORT_SPOTIFY, SORT_NAME, SORT_SIZE };
+#define EQ_BAND_MIN (-12)
+#define EQ_BAND_STEP 2
 
 typedef struct pref_def {
     const char *key;            /* in settings.ini */
@@ -57,6 +73,11 @@ typedef struct pref_def {
     /* Written to settings.ini; NULL writes the value as a number. */
     const char *const *tokens;
     int fallback;               /* default */
+    /* Numbers (names NULL): value v stands for min + v * step, shown with
+     * unit after it and written to settings.ini as that number. */
+    int min, step;
+    const char *unit;
+    int transient;              /* not saved: starts at the default every run */
 } pref_def;
 
 extern int prefs[PREF_COUNT];
@@ -66,8 +87,10 @@ void prefs_defaults(void);
 /* One settings.ini line; returns 0 for a key that is not a pref. */
 int prefs_read(const char *key, const char *value);
 void prefs_write(FILE *f);
-/* Moves a pref by dir (+1/-1), wrapping around. */
+/* Moves a pref by dir (+1/-1): choices wrap around, numbers stop at the ends. */
 void prefs_step(pref_id id, int dir);
+/* The number a numeric pref stands for (min + value * step). */
+int pref_number(pref_id id);
 const char *pref_value_name(pref_id id);
 
 /* Shows or hides a pref in Settings (Spotify Connect is only shown when

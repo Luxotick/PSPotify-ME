@@ -106,6 +106,7 @@ enum { UI_DENSITY_COMFORTABLE, UI_DENSITY_COMPACT, UI_DENSITY_TEXT };
 enum { UI_TEXT_NORMAL, UI_TEXT_SMALL, UI_TEXT_LARGE };
 enum { UI_ANIM_SMOOTH, UI_ANIM_FAST, UI_ANIM_OFF };
 enum { UI_NOW_CLASSIC, UI_NOW_CENTERED, UI_NOW_TEXT };
+enum { UI_LR_BOTH, UI_LR_SEEK, UI_LR_SKIP };
 
 typedef struct ui_style {
     int density;        /* UI_DENSITY_*: list rows */
@@ -113,6 +114,9 @@ typedef struct ui_style {
     int anim;           /* UI_ANIM_* */
     int hide_hints;     /* no button hints in the top bar */
     int now_layout;     /* UI_NOW_*: the Now Playing screen */
+    int swap_confirm;   /* ○ confirms and ✕ goes back (Japanese layout) */
+    int lr_mode;        /* UI_LR_*: a tap changes track and holding seeks, or one of them */
+    int volume_step;    /* percent per ↑/↓ on Now Playing; 0 = 5 */
     /* Drawn stretched over the whole screen under everything (a wallpaper
      * or a blurred cover), then covered by the background color at
      * backdrop_dim (0..1). Owned by the host; NULL for a plain background. */
