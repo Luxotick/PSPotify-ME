@@ -120,6 +120,8 @@ target_link_options(psp-dualcore-actions PRIVATE
 create_pbp_file(
     TARGET psp-dualcore-actions
     TITLE "PSPotify ME"
+    ICON_PATH "${CMAKE_CURRENT_SOURCE_DIR}/assets/ICON0.PNG"
+    BACKGROUND_PATH "${CMAKE_CURRENT_SOURCE_DIR}/assets/PIC1.PNG"
     VERSION "02.00"
     MEMSIZE 1
     BUILD_PRX
