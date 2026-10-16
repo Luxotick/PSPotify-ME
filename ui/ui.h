@@ -99,6 +99,7 @@ typedef struct ui_menu {
     int open, count, sel;
     int category, level, index;     /* the row it belongs to */
     char items[UI_MENU_ITEMS][48];
+    char title[64];     /* optional line above the items; ui_menu_open clears it */
 } ui_menu;
 
 /* How the interface looks, chosen by the host from the user's settings.

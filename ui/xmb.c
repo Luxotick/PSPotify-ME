@@ -130,6 +130,7 @@ void ui_menu_open(ui_state *ui, const char *const *items, int count)
     if (count > UI_MENU_ITEMS) count = UI_MENU_ITEMS;
     for (int i = 0; i < count; ++i) copy_label(m->items[i], sizeof m->items[i], items[i]);
     m->count = count;
+    m->title[0] = '\0';
     m->sel = 0;
     m->open = count > 0;
 }
@@ -812,11 +813,14 @@ void ui_draw(const ui_state *ui)
     if (mp > 0.01f) {
         const ui_menu *m = &ui->menu;
         r_rect(0, 0, SCREEN_W, SCREEN_H, color_fade(0xFF000000u, 0.55f * mp));
-        const float w = 230, h = (float)m->count * 26 + 16;
+        const float head = m->title[0] ? 26.0f : 0.0f;
+        const float w = 230, h = (float)m->count * 26 + 16 + head;
         const float x = (SCREEN_W - w) / 2, y = (SCREEN_H - h) / 2 + (1.0f - mp) * 16;
         draw_round_rect(x, y, w, h, 12, color_fade(t->surface, mp));
+        if (head > 0)
+            font_draw_fit(FONT_BOLD, 13, x + 16, y + 10, color_fade(t->text, mp), m->title, w - 32);
         for (int i = 0; i < m->count; ++i) {
-            const float iy = y + 8 + (float)i * 26;
+            const float iy = y + 8 + head + (float)i * 26;
             const int on = i == m->sel;
             if (on) draw_round_rect(x + 6, iy, w - 12, 24, 8, color_fade(t->accent, mp));
             font_draw_fit(on ? FONT_BOLD : FONT_REGULAR, 13, x + 16, iy + 4,

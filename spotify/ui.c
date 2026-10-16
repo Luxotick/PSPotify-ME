@@ -127,7 +127,10 @@ static unsigned int queue_version, queue_shown_version = ~0u;
 static int queue_shown_current = -2;
 
 /* The song a △ menu was opened for, and what its items do. */
-enum { MENU_ADD, MENU_LIKE, MENU_UNLIKE, MENU_PLAY_NOW, MENU_REMOVE, MENU_PIN, MENU_UNPIN };
+enum {
+    MENU_ADD, MENU_LIKE, MENU_UNLIKE, MENU_PLAY_NOW, MENU_REMOVE, MENU_PIN, MENU_UNPIN,
+    MENU_UPDATE, MENU_UPDATE_LATER
+};
 static spotify_track menu_track;
 static int menu_actions[UI_MENU_ITEMS];
 static int menu_queue_row;
@@ -233,6 +236,7 @@ static int pinned_count;
 static int playlist_view[MAX_PLAYLISTS];    /* row -> playlists[] index */
 static void arrange_playlists(void);
 static void site_finished(void);
+static int site_request(int job, int arg);
 static int pin_index(const char *id);
 
 /* ------------------------------------------------------------ helpers */
@@ -1979,6 +1983,14 @@ static void menu_choice(const ui_event *e)
 {
     if (e->value < 0 || e->value >= UI_MENU_ITEMS) return;
     switch (menu_actions[e->value]) {
+    case MENU_UPDATE:
+        if (site_request(SITE_INSTALL, 0)) ui_toast(&xmb, "Downloading the update\xE2\x80\xA6");
+        else ui_toast(&xmb, "Still busy: try in Settings \xE2\x86\x92 About");
+        fill_settings();
+        break;
+    case MENU_UPDATE_LATER:
+        ui_toast(&xmb, "Settings \xE2\x86\x92 About installs it later");
+        break;
     case MENU_ADD:
         if (current_index < 0) {
             /* Nothing playing yet: just play it. */
@@ -2066,7 +2078,14 @@ static void site_finished(void)
         }
         break;
     case SITE_CHECK:
-        if (update_state == UPDATE_AVAILABLE) {
+        if (update_state == UPDATE_AVAILABLE && update_auto && !xmb.menu.open && !xmb.moving) {
+            /* The check at start found one: ask right away. */
+            static const char *const items[] = { "Install now", "Not now" };
+            menu_actions[0] = MENU_UPDATE;
+            menu_actions[1] = MENU_UPDATE_LATER;
+            ui_menu_open(&xmb, items, 2);
+            snprintf(xmb.menu.title, sizeof xmb.menu.title, "Update %.15s is out", update_info.version);
+        } else if (update_state == UPDATE_AVAILABLE) {
             char note[64];
             snprintf(note, sizeof note, "Update %.15s: Settings \xE2\x86\x92 About", update_info.version);
             ui_toast(&xmb, note);
