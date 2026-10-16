@@ -1,14 +1,16 @@
 // The optional 3D view: a PSP model with the live preview canvas on its
-// screen. Only offered when the site has a model and its credit
-// (models/model.json); three.js loads on first use.
+// screen. three.js loads on first use.
 
 const $ = (id) => document.getElementById(id);
 const THREE_URL = 'three';
 
-export async function offer(canvas, psp) {
-  const res = await fetch(new URL('../models/model.json', import.meta.url));
-  if (!res.ok) return;
-  const model = await res.json();
+// The model in site/models/ and the credit its license asks for, as
+// { file, title, author, url, license, licenseUrl, changes }; null: no 3D view.
+const MODEL = null;
+
+export function offer(canvas, psp) {
+  if (!MODEL) return;
+  const model = MODEL;
   const credit = document.createElement('span');
   credit.append('3D model: ');
   const a = document.createElement('a');

@@ -2,8 +2,8 @@ name: Theme site
 
 # Builds the theme editor and gallery (site/, scripts/build_site.py): the
 # interface compiled to WebAssembly, every theme in themes/ with a picture
-# taken by the PC preview. Pull requests only build it (so a new theme is
-# checked); a push to master also publishes it on GitHub Pages.
+# taken by the PC preview. A push to master publishes it on GitHub Pages; a
+# pull request that adds or changes a theme only builds it, as a check.
 on:
   push:
     branches: [master]
@@ -17,15 +17,7 @@ on:
       - "scripts/ui_assets.py"
       - ".github/workflows/site.yml"
   pull_request:
-    paths:
-      - "themes/**"
-      - "site/**"
-      - "ui/**"
-      - "tools/preview/**"
-      - "scripts/build_preview.py"
-      - "scripts/build_site.py"
-      - "scripts/ui_assets.py"
-      - ".github/workflows/site.yml"
+    paths: ["themes/**"]
   workflow_dispatch:
 
 permissions:

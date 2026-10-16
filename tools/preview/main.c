@@ -83,8 +83,7 @@ static int load_font(font_face face, const char *name)
 
 /* ------------------------------------------------------------ themes */
 
-/* More than the PSP lists (16), so the site can picture every gallery theme. */
-#define MAX_THEMES 64
+#define MAX_THEMES 16
 static char theme_names[MAX_THEMES][64];
 static int theme_count, theme_active = -1;
 static long long theme_mtime;

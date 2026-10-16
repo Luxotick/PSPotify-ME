@@ -16,6 +16,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -52,22 +53,33 @@ def build(out, shots):
     env = dict(os.environ)
     if sys.platform != "win32":
         env.setdefault("SDL_VIDEODRIVER", "dummy")  # no display on the CI runner
+    # The preview lists 16 themes like the PSP, so each picture is taken in a
+    # root of its own that holds the fonts and only that theme.
+    shot_root = Path(tempfile.mkdtemp(prefix="pspotify-shots-"))
+    if program:
+        shutil.copytree(ROOT / ".deps" / "fonts", shot_root / ".deps" / "fonts")
     themes_out = out / "themes"
     themes_out.mkdir()
     index = []
-    for folder in sorted(p for p in (ROOT / "themes").iterdir() if (p / "theme.ini").is_file()):
-        dest = themes_out / folder.name
-        shutil.copytree(folder, dest)
-        files = sorted(f.name for f in folder.iterdir() if f.is_file())
-        entry = {"folder": folder.name, "files": files, "preview": None,
-                 "ini": (folder / "theme.ini").read_text(encoding="utf-8", errors="replace")}
-        if program:
-            shot = dest / "preview.png"
-            subprocess.run([str(program), "--theme", folder.name, *SHOT_ARGS, "--shot", str(shot)],
-                           check=True, cwd=ROOT, env=env, capture_output=True)
-            entry["preview"] = "preview.png"
-        index.append(entry)
-        print(f"theme {folder.name}: {len(files)} file(s){' + preview' if program else ''}")
+    try:
+        for folder in sorted(p for p in (ROOT / "themes").iterdir() if (p / "theme.ini").is_file()):
+            dest = themes_out / folder.name
+            shutil.copytree(folder, dest)
+            files = sorted(f.name for f in folder.iterdir() if f.is_file())
+            entry = {"folder": folder.name, "files": files, "preview": None,
+                     "ini": (folder / "theme.ini").read_text(encoding="utf-8", errors="replace")}
+            if program:
+                themes = shot_root / "themes"
+                shutil.rmtree(themes, ignore_errors=True)
+                shutil.copytree(folder, themes / folder.name)
+                subprocess.run([str(program), "--root", str(shot_root), "--theme", folder.name,
+                                *SHOT_ARGS, "--shot", str(dest / "preview.png")],
+                               check=True, env=env, capture_output=True)
+                entry["preview"] = "preview.png"
+            index.append(entry)
+            print(f"theme {folder.name}: {len(files)} file(s){' + preview' if program else ''}")
+    finally:
+        shutil.rmtree(shot_root, ignore_errors=True)
     (themes_out / "index.json").write_text(json.dumps(index, ensure_ascii=False, indent=1),
                                            encoding="utf-8")
     (out / ".nojekyll").write_text("")

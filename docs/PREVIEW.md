@@ -53,13 +53,9 @@ The preview reloads the active theme as soon as you save the file. Pick another 
 
 **Cover colors** (Settings, on by default) tints the theme with the dominant color of the playing track's album art. A dark theme stays dark and a light one light; only the hue changes, so text stays readable. The preview's covers are generated stand-ins; on the PSP it will use the real album art.
 
-## In the browser
-
-`python scripts/build_preview.py --web` builds the preview with Emscripten (emsdk on PATH) into `build-web/`. `--library DIR` replaces the mock tracks and playlists with `DIR/library.h` (and `DIR/covers/`, if there is one); it works for the PC build too.
-
 ## Theme site
 
-`site/` is the theme editor and gallery published on GitHub Pages by `.github/workflows/site.yml`. To build and try it locally:
+`site/` (theme editor and gallery) is published on GitHub Pages by `.github/workflows/site.yml`. To try it locally (the first line needs emsdk):
 
 ```sh
 python scripts/build_preview.py --web --library site/library
@@ -68,6 +64,4 @@ python scripts/build_site.py
 python -m http.server 8000 --directory _site
 ```
 
-`site/library/library.h` is a made-up library (songs, artists, playlists; the covers are the generated stand-ins), so the public site shows no real music or album art. `build_site.py` copies every `themes/` folder, takes a 480×272 picture of each with the PC preview (`--no-shots` skips that) and writes `themes/index.json` for the gallery and the editor.
-
-The editor sends its `theme.ini` text and wallpaper to the WebAssembly build (`web_set_theme`, `web_set_wallpaper` in `tools/preview/main.c`), which parses and scales them with the same code as the PSP. The PC preview shows a theme's wallpaper as if Background were set to *Theme wallpaper*.
+`site/library/library.h` is a made-up library, so the site shows no real music or album art.
