@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <pspnet_apctl.h>
 #include <pspnet_inet.h>
 #include <pspnet_resolver.h>
 #include <pspthreadman.h>
@@ -68,6 +69,153 @@ static void close_transport(int sock, struct tls_conn *tls)
     if (sock >= 0) sceNetInetClose(sock);
 }
 
+/* ---- DNS ----
+ * Lookups go straight to the DNS servers Wi-Fi handed out, over UDP, with a
+ * timeout of our own. The firmware resolver sometimes never returned, its
+ * own timeout notwithstanding (seen for login5.spotify.com and
+ * luxotick.github.io), and held up sign-in or the loader thread for good.
+ * It is only used when the network reports no DNS server. */
+
+#ifndef PSP_NET_APCTL_INFO_PRIMDNS
+#define PSP_NET_APCTL_INFO_PRIMDNS 11
+#define PSP_NET_APCTL_INFO_SECDNS 12
+#endif
+#define DNS_WAIT_MS 1500
+#define DNS_TRIES 2
+
+static int parse_ipv4(const char *s, struct in_addr *out)
+{
+    unsigned int part[4];
+    int n = 0;
+    while (n < 4) {
+        if (*s < '0' || *s > '9') return -1;
+        unsigned int v = 0;
+        while (*s >= '0' && *s <= '9') v = v * 10u + (unsigned int)(*s++ - '0');
+        if (v > 255) return -1;
+        part[n++] = v;
+        if (n < 4 && *s++ != '.') return -1;
+    }
+    if (*s) return -1;
+    uint8_t *ip = (uint8_t *)out;
+    for (int i = 0; i < 4; ++i) ip[i] = (uint8_t)part[i];
+    return part[0] ? 0 : -1;
+}
+
+/* The primary (which 0) or secondary DNS server from the access point. */
+static int dns_server(int which, struct in_addr *out)
+{
+    union SceNetApctlInfo info;
+    memset(&info, 0, sizeof info);
+    if (sceNetApctlGetInfo(which ? PSP_NET_APCTL_INFO_SECDNS : PSP_NET_APCTL_INFO_PRIMDNS, &info) < 0)
+        return -1;
+    return parse_ipv4(which ? info.secondaryDns : info.primaryDns, out);
+}
+
+/* Moves past a (possibly compressed) name in a DNS message; 0 if malformed. */
+static size_t skip_name(const uint8_t *m, size_t at, size_t len)
+{
+    while (at < len) {
+        const uint8_t c = m[at];
+        if (c == 0) return at + 1;
+        if ((c & 0xC0) == 0xC0) return at + 2 <= len ? at + 2 : 0;
+        at += 1u + c;
+    }
+    return 0;
+}
+
+/* One A query to server; returns 0 with *out set, or < 0. */
+static int dns_query(const char *host, const struct in_addr *server, struct in_addr *out)
+{
+    uint8_t q[300];
+    static uint16_t serial;
+    const uint16_t id = (uint16_t)(++serial ^ sceKernelGetSystemTimeLow());
+    size_t n = 0;
+    q[n++] = (uint8_t)(id >> 8);
+    q[n++] = (uint8_t)id;
+    q[n++] = 0x01;      /* recursion desired */
+    q[n++] = 0x00;
+    q[n++] = 0;
+    q[n++] = 1;         /* one question */
+    memset(q + n, 0, 6);
+    n += 6;
+    for (const char *label = host; *label; ) {
+        const char *dot = strchr(label, '.');
+        const size_t l = dot ? (size_t)(dot - label) : strlen(label);
+        if (l == 0 || l > 63 || n + l + 6 > sizeof q) return -1;
+        q[n++] = (uint8_t)l;
+        memcpy(q + n, label, l);
+        n += l;
+        label += l + (dot ? 1 : 0);
+    }
+    q[n++] = 0;
+    q[n++] = 0;
+    q[n++] = 1;         /* type A */
+    q[n++] = 0;
+    q[n++] = 1;         /* class IN */
+
+    const int sock = sceNetInetSocket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) return sock;
+    struct sockaddr_in to;
+    memset(&to, 0, sizeof to);
+    to.sin_family = AF_INET;
+    to.sin_port = PSP_HTONS(53);
+    to.sin_addr = *server;
+    int ret = -1;
+    if (sceNetInetSendto(sock, q, n, 0, (struct sockaddr *)&to, sizeof to) == (int)n) {
+        const SceInt64 deadline = sceKernelGetSystemTimeWide() + DNS_WAIT_MS * 1000ll;
+        for (;;) {
+            const SceInt64 left = deadline - sceKernelGetSystemTimeWide();
+            if (left <= 0) break;
+            SceNetInetPollfd pfd = { sock, SCE_NET_INET_POLLIN, 0 };
+            if (sceNetInetPoll(&pfd, 1, (int)(left / 1000) + 1) <= 0) break;
+            uint8_t r[512];
+            struct sockaddr_in from;
+            socklen_t from_len = sizeof from;
+            const int got = sceNetInetRecvfrom(sock, r, sizeof r, 0, (struct sockaddr *)&from, &from_len);
+            if (got < 12) continue;
+            const size_t len = (size_t)got;
+            /* Our answer: same id, a response, no error. */
+            if (r[0] != q[0] || r[1] != q[1] || !(r[2] & 0x80)) continue;
+            if ((r[3] & 0x0F) != 0) { ret = -2; break; }
+            const unsigned answers = (unsigned)r[6] << 8 | r[7];
+            size_t at = skip_name(r, 12, len);
+            if (!at || at + 4 > len) break;
+            at += 4;
+            for (unsigned a = 0; a < answers && at; ++a) {
+                at = skip_name(r, at, len);
+                if (!at || at + 10 > len) break;
+                const unsigned type = (unsigned)r[at] << 8 | r[at + 1];
+                const unsigned klass = (unsigned)r[at + 2] << 8 | r[at + 3];
+                const size_t rdlen = (size_t)r[at + 8] << 8 | r[at + 9];
+                at += 10;
+                if (at + rdlen > len) break;
+                if (type == 1 && klass == 1 && rdlen == 4) {
+                    memcpy(out, r + at, 4);
+                    ret = 0;
+                    break;
+                }
+                at += rdlen;    /* a CNAME on the way to the address */
+            }
+            break;
+        }
+    }
+    sceNetInetClose(sock);
+    return ret;
+}
+
+static int resolve_udp(const char *host, struct in_addr *out)
+{
+    int servers = 0;
+    for (int which = 0; which < 2; ++which) {
+        struct in_addr server;
+        if (dns_server(which, &server) < 0) continue;
+        ++servers;
+        for (int t = 0; t < DNS_TRIES; ++t)
+            if (dns_query(host, &server, out) == 0) return 0;
+    }
+    return servers ? -1 : -2;   /* -2: no server to ask */
+}
+
 int net_resolve(const char *host, struct in_addr *out)
 {
     SceInt64 now = sceKernelGetSystemTimeWide();
@@ -80,13 +228,17 @@ int net_resolve(const char *host, struct in_addr *out)
             return 0;
         }
     }
-    char res_buf[1024];
-    int rid = -1;
-    int ret = sceNetResolverCreate(&rid, res_buf, sizeof res_buf);
-    if (ret >= 0) {
-        log_printf("HTTP: resolving %s\n", host);
-        ret = sceNetResolverStartNtoA(rid, host, out, 5, 3);
-        sceNetResolverDelete(rid);
+    log_printf("HTTP: resolving %s\n", host);
+    int ret = resolve_udp(host, out);
+    if (ret == -2) {
+        /* No DNS server known: the firmware resolver is all there is. */
+        char res_buf[1024];
+        int rid = -1;
+        ret = sceNetResolverCreate(&rid, res_buf, sizeof res_buf);
+        if (ret >= 0) {
+            ret = sceNetResolverStartNtoA(rid, host, out, 5, 3);
+            sceNetResolverDelete(rid);
+        }
     }
     if (ret >= 0 && strlen(host) < sizeof dns_cache[0].host) {
         unsigned int slot = dns_next++ % DNS_CACHE_SIZE;
