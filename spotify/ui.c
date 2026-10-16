@@ -2258,11 +2258,20 @@ static int setup_ui(void)
         { FONT_BOLD, 10 }, { FONT_BOLD, 11 }, { FONT_BOLD, 12 }, { FONT_BOLD, 15 },
         { FONT_XBOLD, 14 }, { FONT_XBOLD, 15 }, { FONT_XBOLD, 20 },
     };
-    for (size_t i = 0; i < sizeof sizes / sizeof sizes[0]; ++i)
+    memory_log("pre-atlases");
+    for (size_t i = 0; i < sizeof sizes / sizeof sizes[0]; ++i) {
+        log_printf("UI: atlas face %d size %d
+", (int)sizes[i].face, sizes[i].size);
         font_draw(sizes[i].face, sizes[i].size, 0, 0, 0, "a");
+    }
     static const int icon_sizes[] = { 12, 16, 24, 36 };
-    for (size_t i = 0; i < sizeof icon_sizes / sizeof icon_sizes[0]; ++i)
+    for (size_t i = 0; i < sizeof icon_sizes / sizeof icon_sizes[0]; ++i) {
+        log_printf("UI: atlas icons size %d
+", icon_sizes[i]);
         font_icon(ICON_SEARCH, icon_sizes[i], 0, 0, 0);
+    }
+    log_printf("UI: atlases baked
+");
     render_gu_end();
     log_printf("UI: setup: settings\n");
     xmb.lists[UI_CAT_LIKED][0].loading = 1;
