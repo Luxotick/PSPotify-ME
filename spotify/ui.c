@@ -373,6 +373,8 @@ static void apply_style(void)
     st->lr_mode = prefs[PREF_LR];
     static const int steps[] = { 2, 5, 10 };
     st->volume_step = steps[prefs[PREF_VOLUME_STEP]];
+    st->visualizer = prefs[PREF_VISUALIZER];
+    control.visualizer = prefs[PREF_VISUALIZER];
     prebake_pending = 1;
 }
 
@@ -1495,6 +1497,11 @@ static void sync_state(void)
         copy_text(n->next, sizeof n->next,
                   upcoming >= 0 && upcoming != idx ? queue[upcoming].name : "");
         n->shuffle = prefs[PREF_SHUFFLE];
+        /* Bars jump up with the music and fall back slowly. */
+        for (int b = 0; b < PLAYER_BANDS; ++b) {
+            const float level = control.paused ? 0.0f : control.spectrum[b];
+            n->spectrum[b] = level > n->spectrum[b] ? level : n->spectrum[b] * 0.9f;
+        }
         n->repeat = prefs[PREF_REPEAT];
         if (queue_version != queue_shown_version || idx != queue_shown_current) {
             queue_shown_version = queue_version;
@@ -1909,6 +1916,7 @@ static void pref_changed(pref_id id)
     case PREF_COVER_SHAPE:
         rebuild_cover();
         break;
+    case PREF_VISUALIZER:
     case PREF_TEXT_SIZE:
     case PREF_DENSITY:
     case PREF_ANIMATIONS:

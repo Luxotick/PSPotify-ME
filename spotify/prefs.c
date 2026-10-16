@@ -69,6 +69,8 @@ static pref_def defs[PREF_COUNT] = {
     [PREF_CLOCK] = CHOICE("clock", "Clock", PREF_GROUP_APPEARANCE, clock_names, clock_tokens, 0),
     [PREF_HINTS] = CHOICE("button_hints", "Button hints", PREF_GROUP_APPEARANCE, hint_names,
                           hint_tokens, 0),
+    [PREF_VISUALIZER] = CHOICE("visualizer", "Visualizer on Now Playing", PREF_GROUP_APPEARANCE,
+                               off_on, on_off_tokens, 0),
     [PREF_START] = CHOICE("start_screen", "Start screen", PREF_GROUP_LAYOUT, start_names,
                           start_tokens, 0),
     [PREF_NOW_LAYOUT] = CHOICE("now_playing", "Now Playing", PREF_GROUP_LAYOUT, now_names,

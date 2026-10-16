@@ -32,7 +32,13 @@ typedef struct {
     /* 1: play every track at the same loudness, from the gain Spotify
      * stores in each file's header. */
     volatile int normalize;
+    /* 1: fill spectrum about 30 times a second with the level of
+     * PLAYER_BANDS log-spaced bands (0..1) of what is playing. */
+    volatile int visualizer;
+    volatile float spectrum[16];
 } player_control;
+
+#define PLAYER_BANDS 16
 
 #define PLAYER_EQ_PRESETS 7
 #define PLAYER_EQ_CUSTOM PLAYER_EQ_PRESETS

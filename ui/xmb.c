@@ -674,10 +674,23 @@ static void draw_now_centered(const ui_state *ui, float alpha, float slide)
     if (n->remote) font_icon(ICON_CAST, 14, cx + size + 8, cy, color_fade(t->accent, alpha));
 }
 
+/* Faint spectrum bars along the bottom edge, under the Now Playing screen. */
+static void draw_visualizer(const ui_state *ui, float alpha)
+{
+    const int bands = 16;
+    const float gap = 3, w = (SCREEN_W - gap * (float)(bands + 1)) / (float)bands;
+    for (int b = 0; b < bands; ++b) {
+        const float h = 4.0f + 56.0f * clampf(ui->now.spectrum[b], 0.0f, 1.0f);
+        draw_round_rect(gap + (float)b * (w + gap), SCREEN_H - h, w, h + 4, 3,
+                        color_fade(ui->theme.accent, 0.22f * alpha));
+    }
+}
+
 static void draw_now(const ui_state *ui, float alpha, float slide)
 {
     const ui_theme *t = &ui->theme;
     const ui_now *n = &ui->now;
+    if (n->active && ui->style.visualizer) draw_visualizer(ui, alpha);
     if (!n->active) {
         font_draw(FONT_BOLD, 15, 100 + slide, 120, color_fade(t->text, alpha), "Nothing playing");
         font_draw(FONT_REGULAR, 12, 100 + slide, 142, color_fade(t->dim, alpha),

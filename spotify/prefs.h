@@ -29,6 +29,7 @@ typedef enum {
     PREF_ANIMATIONS,
     PREF_CLOCK,
     PREF_HINTS,
+    PREF_VISUALIZER,
     /* Layout */
     PREF_START,
     PREF_NOW_LAYOUT,

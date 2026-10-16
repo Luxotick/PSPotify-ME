@@ -119,9 +119,61 @@ typedef struct {
     unsigned long long frames;
 } ring_state;
 
+/* ---- visualizer ----
+ * Band levels of the audio going out, on the SC (it is mostly idle while
+ * the ME decodes): a Goertzel filter per band over the last VIS_N samples,
+ * Hann-windowed, about 30 times a second. */
+#define VIS_N 512
+static player_control *vis_control;
+static float vis_samples[VIS_N], vis_window[VIS_N], vis_coef[PLAYER_BANDS];
+static unsigned int vis_pos, vis_since, vis_rate;
+
+static void vis_setup(player_control *control, unsigned int rate)
+{
+    vis_control = control;
+    vis_rate = rate;
+    vis_pos = vis_since = 0;
+    memset(vis_samples, 0, sizeof vis_samples);
+    for (int i = 0; i < VIS_N; ++i)
+        vis_window[i] = 0.5f - 0.5f * cosf(2.0f * 3.14159265f * (float)i / (float)(VIS_N - 1));
+    /* 50 Hz to 12 kHz, evenly spaced on a log scale. */
+    for (int b = 0; b < PLAYER_BANDS; ++b) {
+        const float f = 50.0f * powf(12000.0f / 50.0f, (float)b / (float)(PLAYER_BANDS - 1));
+        vis_coef[b] = 2.0f * cosf(2.0f * 3.14159265f * f / (float)rate);
+    }
+}
+
+static void vis_feed(const int16_t *pcm, int frames)
+{
+    player_control *c = vis_control;
+    if (!c || !c->visualizer || !vis_rate) return;
+    for (int i = 0; i < frames; ++i) {
+        vis_samples[vis_pos] = (float)(pcm[i * 2] + pcm[i * 2 + 1]) * (0.5f / 32768.0f);
+        vis_pos = (vis_pos + 1) % VIS_N;
+    }
+    vis_since += (unsigned int)frames;
+    if (vis_since < vis_rate / 30u) return;
+    vis_since = 0;
+    for (int b = 0; b < PLAYER_BANDS; ++b) {
+        float s1 = 0, s2 = 0;
+        const float k = vis_coef[b];
+        for (int i = 0; i < VIS_N; ++i) {
+            const float s = vis_samples[(vis_pos + (unsigned int)i) % VIS_N] * vis_window[i] + k * s1 - s2;
+            s2 = s1;
+            s1 = s;
+        }
+        const float power = s1 * s1 + s2 * s2 - k * s1 * s2;
+        /* Amplitude relative to a full-scale sine, then -60..0 dB to 0..1. */
+        const float amp = sqrtf(power > 0 ? power : 0) / (VIS_N / 4.0f);
+        float level = (20.0f * log10f(amp + 1e-6f) + 60.0f) / 60.0f;
+        c->spectrum[b] = level < 0 ? 0 : level > 1 ? 1 : level;
+    }
+}
+
 /* Appends interleaved stereo frames, playing each full 1024-frame slot. */
 static int ring_push(ring_state *ring, const int16_t *pcm, int frames, int volume)
 {
+    vis_feed(pcm, frames);
     for (int i = 0; i < frames; ++i) {
         output_ring[ring->slot][ring->fill * 2] = pcm[i * 2];
         output_ring[ring->slot][ring->fill * 2 + 1] = pcm[i * 2 + 1];
@@ -486,6 +538,7 @@ int spotify_play_ogg(const char *urls, unsigned int url_stride, int url_count,
     }
 
     unsigned long long next_report = 10ull * info.sample_rate;
+    vis_setup(control, info.sample_rate);
     SceInt64 started = sceKernelGetSystemTimeWide();
 
     log_printf("--- PLAYING (Vorbis decode on Media Engine) ---\n");
@@ -601,6 +654,8 @@ int spotify_play_ogg(const char *urls, unsigned int url_stride, int url_count,
         }
     }
     if (ret == 0) ring_flush(&ring, output_volume(control, norm));
+    vis_control = NULL;
+    for (int b = 0; b < PLAYER_BANDS; ++b) control->spectrum[b] = 0;
     log_printf("PLAYER: %s, %u s, %u waits, SC waited %u ms on ME\n",
                ret == PLAYER_STOPPED ? "stopped" : "finished",
                (unsigned int)(ring.frames / info.sample_rate), waits,
