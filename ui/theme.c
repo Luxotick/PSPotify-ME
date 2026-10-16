@@ -96,6 +96,13 @@ int theme_parse(ui_theme *t, const char *text, size_t len)
         size_t key_len = (size_t)(eq - line), value_len = line_len - key_len - 1;
         trim(&key, &key_len);
         trim(&value, &value_len);
+        /* An inline comment: '#' or ';' after a space ("accent = #1ED760  # green"). */
+        for (size_t i = 1; i < value_len; ++i)
+            if ((value[i] == '#' || value[i] == ';') && isspace((unsigned char)value[i - 1])) {
+                value_len = i;
+                trim(&value, &value_len);
+                break;
+            }
 
         if (key_is(key, key_len, "name")) {
             copy_value(t->name, sizeof t->name, value, value_len);

@@ -12,7 +12,7 @@ ms0:/PSP/GAME/PSPOTIFY/THEMES/...
 The folder must be writable. On start the app writes the following files into it:
 - `kcall.prx` (the embedded Media Engine bridge),
 - `spotify.cfg` (your sign-in),
-- `settings.ini` (theme, Cover colors, equalizer, shuffle, repeat and the debug switch),
+- `settings.ini` (everything you choose in Settings, and the debug switch),
 - `spotify.log`, only in debug mode (see Troubleshooting).
 
 Without the `THEMES` folder the app still runs, with its built-in dark theme.

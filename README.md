@@ -59,10 +59,26 @@ Updating from an older version keeps your pairing. More detail, plus troubleshoo
 | ✕ | Open / play | Repeat: off, queue, track |
 | ○ | Back | — |
 | □ | Pause / resume (in Search: type a search) | Pause / resume |
-| △ | Song menu: add to queue, save to / remove from Liked Songs | Shuffle |
-| SELECT | In Queue: pick a song up, then ↑/↓ to move it | — |
+| △ | Song menu: add to queue, save to / remove from Liked Songs. On a playlist: pin it to the top | Shuffle |
+| SELECT | In Queue and Settings → Categories: pick a row up, then ↑/↓ to move it | — |
 | L / R | Tap: previous (restarts after 3 s) / next song. Hold: seek back / forward | Same |
 | START | Quit | Quit |
+
+In Settings, ✕ or ← / → changes the selected option. **Settings → Controls** can swap ✕ and ○, make L/R only seek or only skip, and change the volume step. The headphone remote's play/pause and next/previous buttons work too (PSP-2000 and later).
+
+## Settings
+
+| Group | What you can change |
+|---|---|
+| Themes | The color theme (see below) |
+| Appearance | Cover colors; background: plain, a blurred copy of the album cover, or the theme's wallpaper; cover shape (square, rounded, circle); text size; list style (comfortable, compact, text only); animations (smooth, fast, off); 12/24-hour clock; button hints; a visualizer on Now Playing |
+| Layout | Start screen; Now Playing layout (classic, centered, text only); playlist order (Spotify's, by name, by size) |
+| Categories | Reorder (SELECT, ↑/↓) or hide (✕) the categories across the top |
+| Sound | Equalizer presets or your own five bands; same loudness for every song (Spotify's normalization values) |
+| Playback | Sleep timer; battery saver (fewer frames while idle); CPU speed |
+| Controls | Confirm button, L/R behavior, volume step, headphone remote |
+
+Everything is saved to `settings.ini` next to the EBOOT, which you can also edit by hand.
 
 ## Themes
 
@@ -78,6 +94,19 @@ accent = #1ED760
 ```
 
 Copy a folder, change the colors in Notepad and it shows up in Settings. A missing or malformed line keeps the default color.
+
+Optional lines go further:
+
+```ini
+highlight = #FFFFFF      # title of the selected row (default: text)
+progress = #1ED760       # filled part of the progress bars (default: accent)
+player_bar = #1B1D24     # the mini player at the bottom (default: surface)
+icons = #F2F2F2          # the category icons (default: text)
+wallpaper = wall.jpg     # a JPEG or PNG in the theme's folder
+wallpaper_dim = 40       # 0-100: how much of the background color lies over it
+```
+
+A wallpaper shows when **Settings → Appearance → Background** is set to *Theme wallpaper*. Any size works (it is cropped to the screen's shape); 480×272 looks sharpest and loads fastest.
 
 **Cover colors** (Settings, on by default) tints the theme with the dominant color of the playing track's album art. A dark theme stays dark and a light one light; only the hue changes, so text stays readable.
 
