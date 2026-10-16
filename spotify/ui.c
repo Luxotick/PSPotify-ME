@@ -129,7 +129,7 @@ static int queue_shown_current = -2;
 /* The song a △ menu was opened for, and what its items do. */
 enum {
     MENU_ADD, MENU_LIKE, MENU_UNLIKE, MENU_PLAY_NOW, MENU_REMOVE, MENU_PIN, MENU_UNPIN,
-    MENU_UPDATE, MENU_UPDATE_LATER
+    MENU_UPDATE, MENU_UPDATE_LATER, MENU_RESTART, MENU_RESTART_LATER
 };
 static spotify_track menu_track;
 static int menu_actions[UI_MENU_ITEMS];
@@ -154,6 +154,10 @@ enum {
 static site_update update_info;
 static volatile int update_state, update_progress;
 static int update_auto;                     /* the check was the one at start */
+/* Quit, then have main.c start the EBOOT again (after an update). */
+static int restart_requested;
+/* The Quit row at the end of Settings' groups, in group_view. */
+#define GROUP_QUIT (-2)
 static spotify_track like_track;
 static volatile int like_remove, like_status;
 static unsigned int rng_state = 0x9E3779B9u;
@@ -188,8 +192,8 @@ static int theme_count, theme_active = -1;
 #define PSPOTIFY_CONNECT 0
 #endif
 /* Settings: level 0 lists the groups, level 1 the rows of the open one. */
-static ui_row group_rows[PREF_GROUPS];
-static int group_view[PREF_GROUPS], group_count;    /* row -> PREF_GROUP_* */
+static ui_row group_rows[PREF_GROUPS + 1];
+static int group_view[PREF_GROUPS + 1], group_count;    /* row -> PREF_GROUP_*, or GROUP_QUIT */
 #define OPTION_ROWS (PREF_COUNT > MAX_THEMES ? PREF_COUNT : MAX_THEMES)
 static ui_row option_rows[OPTION_ROWS];
 static int option_view[OPTION_ROWS];    /* row -> pref, theme or category */
@@ -588,6 +592,13 @@ static void fill_groups(void)
         r->color = group_info[g].color;
         group_view[group_count++] = g;
     }
+    ui_row *quit = &group_rows[group_count];
+    memset(quit, 0, sizeof *quit);
+    copy_text(quit->title, sizeof quit->title, "Quit");
+    copy_text(quit->subtitle, sizeof quit->subtitle, "Back to the PSP menu (START does it too)");
+    quit->icon = ICON_POWER;
+    quit->color = 0xFF475569u;
+    group_view[group_count++] = GROUP_QUIT;
     ui_list *l = &xmb.lists[UI_CAT_SETTINGS][0];
     l->rows = group_rows;
     l->count = group_count;
@@ -657,7 +668,7 @@ static void fill_options(void)
                      update_info.version, update_progress);
             break;
         case UPDATE_INSTALLED:
-            snprintf(r->subtitle, sizeof r->subtitle, "%s installed \xC2\xB7 quit with START and start again",
+            snprintf(r->subtitle, sizeof r->subtitle, "%s installed \xC2\xB7 select to restart",
                      update_info.version);
             break;
         case UPDATE_INSTALL_FAILED:
@@ -665,7 +676,8 @@ static void fill_options(void)
             break;
         default: copy_text(r->subtitle, sizeof r->subtitle, "Select to check for updates"); break;
         }
-        r->icon = update_state == UPDATE_AVAILABLE ? ICON_DOWNLOAD : ICON_INFO;
+        r->icon = update_state == UPDATE_AVAILABLE ? ICON_DOWNLOAD
+                : update_state == UPDATE_INSTALLED ? ICON_RESTART : ICON_INFO;
         r->color = update_state == UPDATE_AVAILABLE ? xmb.theme_target.accent : 0xFF0F766Eu;
         option_view[n++] = 0;
         r = &option_rows[n];
@@ -701,8 +713,9 @@ static void fill_options(void)
                 const SceUInt64 now = sceKernelGetSystemTimeWide();
                 const unsigned left = sleep_deadline > now
                     ? (unsigned)((sleep_deadline - now) / 60000000u) + 1u : 0u;
-                snprintf(r->subtitle, sizeof r->subtitle, "%s \xC2\xB7 pauses in %u min",
-                         pref_value_name((pref_id)i), left);
+                snprintf(r->subtitle, sizeof r->subtitle, "%s \xC2\xB7 %s in %u min",
+                         pref_value_name((pref_id)i),
+                         prefs[PREF_SLEEP_ACTION] == SLEEP_POWER_OFF ? "turns off" : "pauses", left);
             }
             if (i >= PREF_EQ_60 && i <= PREF_EQ_14K && prefs[PREF_EQUALIZER] != PLAYER_EQ_CUSTOM)
                 snprintf(r->subtitle, sizeof r->subtitle, "%s \xC2\xB7 used by Custom",
@@ -1991,6 +2004,12 @@ static void menu_choice(const ui_event *e)
     case MENU_UPDATE_LATER:
         ui_toast(&xmb, "Settings \xE2\x86\x92 About installs it later");
         break;
+    case MENU_RESTART:
+        restart_requested = 1;
+        break;
+    case MENU_RESTART_LATER:
+        ui_toast(&xmb, "The new version starts next time");
+        break;
     case MENU_ADD:
         if (current_index < 0) {
             /* Nothing playing yet: just play it. */
@@ -2095,8 +2114,16 @@ static void site_finished(void)
         update_auto = 0;
         break;
     case SITE_INSTALL:
-        ui_toast(&xmb, update_state == UPDATE_INSTALLED ? "Updated: quit with START and start again"
-                                                        : "Update failed, nothing changed");
+        if (update_state == UPDATE_INSTALLED && !xmb.menu.open && !xmb.moving) {
+            static const char *const items[] = { "Restart now", "Later" };
+            menu_actions[0] = MENU_RESTART;
+            menu_actions[1] = MENU_RESTART_LATER;
+            ui_menu_open(&xmb, items, 2);
+            snprintf(xmb.menu.title, sizeof xmb.menu.title, "%.15s is installed", update_info.version);
+        } else {
+            ui_toast(&xmb, update_state == UPDATE_INSTALLED ? "Updated: restart from Settings \xE2\x86\x92 About"
+                                                            : "Update failed, nothing changed");
+        }
         break;
     default:
         break;
@@ -2122,7 +2149,8 @@ static void site_open(int index)
         }
     } else if (open_group == PREF_GROUP_ABOUT && index == 0) {
         const int s = update_state;
-        if (s == UPDATE_AVAILABLE || s == UPDATE_INSTALL_FAILED) site_request(SITE_INSTALL, 0);
+        if (s == UPDATE_INSTALLED) restart_requested = 1;
+        else if (s == UPDATE_AVAILABLE || s == UPDATE_INSTALL_FAILED) site_request(SITE_INSTALL, 0);
         else if (s == UPDATE_UNKNOWN || s == UPDATE_CURRENT || s == UPDATE_FAILED) site_request(SITE_CHECK, 0);
     } else if (open_group == PREF_GROUP_ABOUT && index == 1) {
         prefs_step(PREF_CHECK_UPDATES, 1);
@@ -2178,7 +2206,9 @@ static void pref_changed(pref_id id)
     case PREF_SLEEP:
         sleep_deadline = prefs[id] ? sceKernelGetSystemTimeWide() +
                          (SceUInt64)sleep_minutes[prefs[id]] * 60000000u : 0;
-        if (prefs[id]) ui_toast(&xmb, "Playback pauses when the timer ends");
+        if (prefs[id])
+            ui_toast(&xmb, prefs[PREF_SLEEP_ACTION] == SLEEP_POWER_OFF
+                     ? "The PSP turns off when the timer ends" : "Playback pauses when the timer ends");
         break;
     case PREF_CONFIRM:
     case PREF_LR:
@@ -2269,6 +2299,7 @@ static int handle(const ui_event *e)
                           "Search", "");
         } else if (e->category == UI_CAT_SETTINGS && e->level == 0) {
             if (e->index < 0 || e->index >= group_count) break;
+            if (group_view[e->index] == GROUP_QUIT) return 1;
             open_group = group_view[e->index];
             ui_open_level(&xmb, UI_CAT_SETTINGS);
             if (open_group == PREF_GROUP_GALLERY && gallery_count < 0) {
@@ -2279,6 +2310,7 @@ static int handle(const ui_event *e)
         } else if (e->category == UI_CAT_SETTINGS &&
                    (open_group == PREF_GROUP_GALLERY || open_group == PREF_GROUP_ABOUT)) {
             site_open(e->index);
+            if (restart_requested) return 1;
         } else if (e->category == UI_CAT_SETTINGS && open_group == PREF_GROUP_THEMES) {
             if (e->index < 0 || e->index >= theme_count) break;
             apply_theme(option_view[e->index], 0);
@@ -2312,6 +2344,7 @@ static int handle(const ui_event *e)
         break;
     case UI_EV_MENU:
         menu_choice(e);
+        if (restart_requested) return 1;
         break;
     case UI_EV_MOVE:
         if (e->category == UI_CAT_QUEUE) queue_move(e->index, e->value);
@@ -2601,6 +2634,13 @@ int spotify_ui_run(volatile int *exit_requested)
             sleep_deadline = 0;
             prefs[PREF_SLEEP] = 0;
             control.paused = 1;
+            if (prefs[PREF_SLEEP_ACTION] == SLEEP_POWER_OFF) {
+                /* Like holding the power switch: the console shuts down. */
+                log_printf("UI: sleep timer: turning the PSP off\n");
+                log_flush();
+                frame_message("Good night", NULL);
+                scePowerRequestStandby();
+            }
             ui_toast(&xmb, "Sleep timer: paused");
             fill_settings();
         }
@@ -2652,5 +2692,5 @@ int spotify_ui_run(volatile int *exit_requested)
     if (thumb_lock >= 0) sceKernelDeleteSema(thumb_lock);
     log_set_buffered(0);
     render_gu_term();
-    return me_dead ? PLAYER_ERR_ME_TIMEOUT : 0;
+    return me_dead ? PLAYER_ERR_ME_TIMEOUT : restart_requested ? SPOTIFY_UI_RESTART : 0;
 }

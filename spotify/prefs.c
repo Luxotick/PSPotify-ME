@@ -37,6 +37,8 @@ static const char *const repeat_names[] = { "Off", "All", "One" };
 /* The order of ui.c's sleep_minutes[]. */
 static const char *const sleep_names[] = { "Off", "15 min", "30 min", "45 min", "60 min",
                                            "90 min" };
+static const char *const sleep_action_names[] = { "Pause", "Turn off the PSP" };
+static const char *const sleep_action_tokens[] = { "pause", "power_off" };
 static const char *const cpu_names[] = { "333 MHz (fastest)", "266 MHz", "222 MHz (saves battery)" };
 static const char *const cpu_tokens[] = { "333", "266", "222" };
 static const char *const confirm_names[] = { "Cross", "Circle" };
@@ -87,6 +89,8 @@ static pref_def defs[PREF_COUNT] = {
                               off_on, on_off_tokens, 0),
     [PREF_SLEEP] = { .key = "sleep_timer", .label = "Sleep timer", .group = PREF_GROUP_PLAYBACK,
                      .count = 6, .names = sleep_names, .transient = 1 },
+    [PREF_SLEEP_ACTION] = CHOICE("sleep_timer_action", "When the timer ends", PREF_GROUP_PLAYBACK,
+                                 sleep_action_names, sleep_action_tokens, 0),
     [PREF_BATTERY] = CHOICE("battery_saver", "Battery saver", PREF_GROUP_PLAYBACK, off_on,
                             on_off_tokens, 0),
     [PREF_CPU] = CHOICE("cpu_speed", "CPU speed", PREF_GROUP_PLAYBACK, cpu_names, cpu_tokens, 0),
