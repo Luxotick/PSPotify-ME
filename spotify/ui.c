@@ -529,7 +529,7 @@ static const struct {
     [PREF_GROUP_CATEGORIES] = { "Categories", "Reorder or hide the categories", ICON_REORDER,
                                 0xFFB45309u },
     [PREF_GROUP_SOUND] = { "Sound", "Equalizer and loudness", ICON_SLIDERS, 0xFF15803Du },
-    [PREF_GROUP_PLAYBACK] = { "Playback", "Sleep timer, battery and CPU speed", ICON_DISC,
+    [PREF_GROUP_PLAYBACK] = { "Playback", "Sleep timer, battery and CPU speed", ICON_HEADPHONES,
                               0xFF3B4FD8u },
     [PREF_GROUP_CONTROLS] = { "Controls", "Buttons and the headphone remote", ICON_GAMEPAD,
                               0xFF475569u },
@@ -2258,17 +2258,11 @@ static int setup_ui(void)
         { FONT_BOLD, 10 }, { FONT_BOLD, 11 }, { FONT_BOLD, 12 }, { FONT_BOLD, 15 },
         { FONT_XBOLD, 14 }, { FONT_XBOLD, 15 }, { FONT_XBOLD, 20 },
     };
-    memory_log("pre-atlases");
-    for (size_t i = 0; i < sizeof sizes / sizeof sizes[0]; ++i) {
-        log_printf("UI: atlas face %d size %d\n", (int)sizes[i].face, sizes[i].size);
+    for (size_t i = 0; i < sizeof sizes / sizeof sizes[0]; ++i)
         font_draw(sizes[i].face, sizes[i].size, 0, 0, 0, "a");
-    }
     static const int icon_sizes[] = { 12, 16, 24, 36 };
-    for (size_t i = 0; i < sizeof icon_sizes / sizeof icon_sizes[0]; ++i) {
-        log_printf("UI: atlas icons size %d\n", icon_sizes[i]);
+    for (size_t i = 0; i < sizeof icon_sizes / sizeof icon_sizes[0]; ++i)
         font_icon(ICON_SEARCH, icon_sizes[i], 0, 0, 0);
-    }
-    log_printf("UI: atlases baked\n");
     render_gu_end();
     log_printf("UI: setup: settings\n");
     xmb.lists[UI_CAT_LIKED][0].loading = 1;
@@ -2276,8 +2270,21 @@ static int setup_ui(void)
     return 0;
 }
 
+/* Clears the FPU's exception enables (FCSR bits 7-11) for this thread.
+ * stb_truetype hits invalid operations on some glyph curves at some sizes
+ * (Lucide's disc-3 at 16 px, for one); a PC gets a NaN, but a trap on the
+ * PSP took the whole console down while the font atlases were baked. */
+static void fpu_no_traps(void)
+{
+    unsigned int fcsr;
+    __asm__ volatile("cfc1 %0, $31" : "=r"(fcsr));
+    fcsr &= ~0x0003FF80u;   /* the enables, and any cause bits already set */
+    __asm__ volatile("ctc1 %0, $31" : : "r"(fcsr));
+}
+
 int spotify_ui_run(volatile int *exit_requested)
 {
+    fpu_no_traps();
     log_set_echo(0);   /* the debug console would scribble over our frames */
     /* Full speed for the whole session: at 222 MHz each TLS handshake took
      * 0.6-1.3 s on hardware (about 0.25 s at 333 MHz). */

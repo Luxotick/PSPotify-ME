@@ -28,16 +28,19 @@
 #define ICON_SPARKLES       0xe412u
 #define ICON_LAYOUT         0xe1c1u
 #define ICON_REORDER        0xe37du
-#define ICON_DISC           0xe494u
+#define ICON_HEADPHONES     0xe0f1u
 #define ICON_GAMEPAD        0xe0dfu
 #define ICON_PIN            0xe259u
 
-/* Every icon the UI bakes; keep in sync with the defines above. */
+/* Every icon the UI bakes; keep in sync with the defines above. Before adding
+ * one, check that stb_truetype rasterizes it at 12, 16, 24 and 36 px without
+ * a floating-point exception: disc-3 (0xe494) raised one at 16 px, which
+ * brought the PSP down before the UI thread stopped trapping them. */
 #define ICON_LIST ICON_SEARCH, ICON_HEART, ICON_LIST_MUSIC, ICON_MUSIC, ICON_SLIDERS, \
     ICON_PLAY, ICON_PAUSE, ICON_SKIP_BACK, ICON_SKIP_FORWARD, ICON_VOLUME,           \
     ICON_VOLUME_MUTE, ICON_CROSS, ICON_CIRCLE, ICON_TRIANGLE, ICON_SQUARE, ICON_USER, \
     ICON_LOADER, ICON_SHUFFLE, ICON_REPEAT, ICON_REPEAT_ONE, ICON_HISTORY, ICON_CAST, \
-    ICON_QUEUE, ICON_PALETTE, ICON_SPARKLES, ICON_LAYOUT, ICON_REORDER, ICON_DISC,     \
+    ICON_QUEUE, ICON_PALETTE, ICON_SPARKLES, ICON_LAYOUT, ICON_REORDER, ICON_HEADPHONES,     \
     ICON_GAMEPAD, ICON_PIN
 
 #endif
