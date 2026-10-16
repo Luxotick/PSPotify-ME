@@ -129,7 +129,7 @@ static int queue_shown_current = -2;
 /* The song a △ menu was opened for, and what its items do. */
 enum {
     MENU_ADD, MENU_LIKE, MENU_UNLIKE, MENU_PLAY_NOW, MENU_REMOVE, MENU_PIN, MENU_UNPIN,
-    MENU_UPDATE, MENU_UPDATE_LATER, MENU_RESTART, MENU_RESTART_LATER
+    MENU_UPDATE, MENU_UPDATE_LATER, MENU_QUIT, MENU_QUIT_LATER
 };
 static spotify_track menu_track;
 static int menu_actions[UI_MENU_ITEMS];
@@ -154,8 +154,9 @@ enum {
 static site_update update_info;
 static volatile int update_state, update_progress;
 static int update_auto;                     /* the check was the one at start */
-/* Quit, then have main.c start the EBOOT again (after an update). */
-static int restart_requested;
+/* Quit from a menu or Settings (after an update: the new EBOOT runs next
+ * time; a user app cannot start an EBOOT.PBP itself). */
+static int quit_requested;
 /* The Quit row at the end of Settings' groups, in group_view. */
 #define GROUP_QUIT (-2)
 static spotify_track like_track;
@@ -668,7 +669,7 @@ static void fill_options(void)
                      update_info.version, update_progress);
             break;
         case UPDATE_INSTALLED:
-            snprintf(r->subtitle, sizeof r->subtitle, "%s installed \xC2\xB7 select to restart",
+            snprintf(r->subtitle, sizeof r->subtitle, "%s installed \xC2\xB7 select to quit, then start it again",
                      update_info.version);
             break;
         case UPDATE_INSTALL_FAILED:
@@ -677,7 +678,7 @@ static void fill_options(void)
         default: copy_text(r->subtitle, sizeof r->subtitle, "Select to check for updates"); break;
         }
         r->icon = update_state == UPDATE_AVAILABLE ? ICON_DOWNLOAD
-                : update_state == UPDATE_INSTALLED ? ICON_RESTART : ICON_INFO;
+                : update_state == UPDATE_INSTALLED ? ICON_POWER : ICON_INFO;
         r->color = update_state == UPDATE_AVAILABLE ? xmb.theme_target.accent : 0xFF0F766Eu;
         option_view[n++] = 0;
         r = &option_rows[n];
@@ -2004,10 +2005,10 @@ static void menu_choice(const ui_event *e)
     case MENU_UPDATE_LATER:
         ui_toast(&xmb, "Settings \xE2\x86\x92 About installs it later");
         break;
-    case MENU_RESTART:
-        restart_requested = 1;
+    case MENU_QUIT:
+        quit_requested = 1;
         break;
-    case MENU_RESTART_LATER:
+    case MENU_QUIT_LATER:
         ui_toast(&xmb, "The new version starts next time");
         break;
     case MENU_ADD:
@@ -2115,13 +2116,13 @@ static void site_finished(void)
         break;
     case SITE_INSTALL:
         if (update_state == UPDATE_INSTALLED && !xmb.menu.open && !xmb.moving) {
-            static const char *const items[] = { "Restart now", "Later" };
-            menu_actions[0] = MENU_RESTART;
-            menu_actions[1] = MENU_RESTART_LATER;
+            static const char *const items[] = { "Quit now and start it again", "Later" };
+            menu_actions[0] = MENU_QUIT;
+            menu_actions[1] = MENU_QUIT_LATER;
             ui_menu_open(&xmb, items, 2);
             snprintf(xmb.menu.title, sizeof xmb.menu.title, "%.15s is installed", update_info.version);
         } else {
-            ui_toast(&xmb, update_state == UPDATE_INSTALLED ? "Updated: restart from Settings \xE2\x86\x92 About"
+            ui_toast(&xmb, update_state == UPDATE_INSTALLED ? "Updated: the new version starts next time"
                                                             : "Update failed, nothing changed");
         }
         break;
@@ -2149,7 +2150,7 @@ static void site_open(int index)
         }
     } else if (open_group == PREF_GROUP_ABOUT && index == 0) {
         const int s = update_state;
-        if (s == UPDATE_INSTALLED) restart_requested = 1;
+        if (s == UPDATE_INSTALLED) quit_requested = 1;
         else if (s == UPDATE_AVAILABLE || s == UPDATE_INSTALL_FAILED) site_request(SITE_INSTALL, 0);
         else if (s == UPDATE_UNKNOWN || s == UPDATE_CURRENT || s == UPDATE_FAILED) site_request(SITE_CHECK, 0);
     } else if (open_group == PREF_GROUP_ABOUT && index == 1) {
@@ -2310,7 +2311,7 @@ static int handle(const ui_event *e)
         } else if (e->category == UI_CAT_SETTINGS &&
                    (open_group == PREF_GROUP_GALLERY || open_group == PREF_GROUP_ABOUT)) {
             site_open(e->index);
-            if (restart_requested) return 1;
+            if (quit_requested) return 1;
         } else if (e->category == UI_CAT_SETTINGS && open_group == PREF_GROUP_THEMES) {
             if (e->index < 0 || e->index >= theme_count) break;
             apply_theme(option_view[e->index], 0);
@@ -2344,7 +2345,7 @@ static int handle(const ui_event *e)
         break;
     case UI_EV_MENU:
         menu_choice(e);
-        if (restart_requested) return 1;
+        if (quit_requested) return 1;
         break;
     case UI_EV_MOVE:
         if (e->category == UI_CAT_QUEUE) queue_move(e->index, e->value);
@@ -2692,5 +2693,5 @@ int spotify_ui_run(volatile int *exit_requested)
     if (thumb_lock >= 0) sceKernelDeleteSema(thumb_lock);
     log_set_buffered(0);
     render_gu_term();
-    return me_dead ? PLAYER_ERR_ME_TIMEOUT : restart_requested ? SPOTIFY_UI_RESTART : 0;
+    return me_dead ? PLAYER_ERR_ME_TIMEOUT : 0;
 }

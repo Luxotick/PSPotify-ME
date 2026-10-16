@@ -346,7 +346,7 @@ int main(int argc, char **argv)
         }
     }
     if (init_result >= 0) init_result = initialize();
-    int quit_now = 0, restart = 0;
+    int quit_now = 0;
     if (init_result < 0) {
         log_printf("INIT FAIL: 0x%08X\n", (unsigned int)init_result);
     } else if (network_probe() < 0) {
@@ -354,13 +354,11 @@ int main(int argc, char **argv)
     } else {
         memory_log("post-network");
         http_init();
-        const int ui_result = spotify_ui_run(&exit_requested);
-        if (ui_result == PLAYER_ERR_ME_TIMEOUT) {
+        if (spotify_ui_run(&exit_requested) == PLAYER_ERR_ME_TIMEOUT) {
             /* A decode may still be running on the ME: never unload under it. */
             unsafe_to_exit = 1;
         } else {
             quit_now = 1;
-            restart = ui_result == SPOTIFY_UI_RESTART;
         }
         pspDebugScreenInit();
         log_set_echo(1);
@@ -412,20 +410,6 @@ controls:
         sceUtilityUnloadNetModule(PSP_NET_MODULE_COMMON);
     }
     if (power_locked) scePowerUnlock(0);
-    if (restart) {
-        /* Everything is shut down: start the (new) EBOOT again. If the
-         * firmware refuses, a normal exit leaves the user to start it. */
-        static char eboot[300];
-        snprintf(eboot, sizeof eboot, "%s/EBOOT.PBP", app_directory);
-        struct SceKernelLoadExecParam param;
-        memset(&param, 0, sizeof param);
-        param.size = sizeof param;
-        param.args = strlen(eboot) + 1;
-        param.argp = eboot;
-        log_printf("Restarting\n");
-        const int ret = sceKernelLoadExec(eboot, &param);
-        log_printf("Restart failed: 0x%08X\n", (unsigned int)ret);
-    }
     log_printf("Exiting safely\n");
     sceKernelExitGame();
     return init_result < 0 ? 1 : 0;

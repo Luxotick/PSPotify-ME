@@ -6,9 +6,7 @@
  * playlists, and plays tracks on a player thread with Vorbis decoded on the
  * Media Engine. Returns when the user exits or *exit_requested is set.
  * Returns PLAYER_ERR_ME_TIMEOUT if the ME stopped responding (reboot
- * needed to exit), SPOTIFY_UI_RESTART when the user wants the app started
- * again (a new version was installed), otherwise 0. */
-#define SPOTIFY_UI_RESTART 2
+ * needed to exit), otherwise 0. */
 int spotify_ui_run(volatile int *exit_requested);
 
 #endif /* SPOTIFY_UI_H */
