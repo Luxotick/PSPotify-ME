@@ -34,6 +34,8 @@ int spotify_ctx_start(spotify_ctx *c, const spotify_ui_hooks *ui);
 
 /* Resolves and plays one track (blocking; stop it via control->stop).
  * Returns the spotify_play_ogg result or another negative error. */
+/* spotify_ctx_play's return when Spotify refused the track's audio key. */
+#define SESSION_KEY_REFUSED (-20)
 int spotify_ctx_play(spotify_ctx *c, const char *track_id, player_control *control);
 
 /* Resolve this track (metadata, audio key, CDN URLs) in the background a few

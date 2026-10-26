@@ -120,7 +120,7 @@ int spotify_request_audio_key(spotify_session *session,
                 err = (uint16_t)(((uint16_t)rx_buf[4] << 8) | rx_buf[5]);
             }
             log_printf("AUDIOKEY: Spotify returned error code 0x%04X!\n", err);
-            return -3;
+            return AUDIOKEY_REFUSED;
         } else if (cmd == PACKET_TYPE_PING) {
             spotify_send_packet(session, PACKET_TYPE_PONG, rx_buf, rx_len);
         } else if (cmd == PACKET_TYPE_MERCURY_EVENT) {

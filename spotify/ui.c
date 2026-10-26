@@ -110,6 +110,8 @@ static volatile play_state_t play_state = PS_IDLE;
 static volatile int player_quit;
 static volatile int me_dead;
 static volatile int last_error;    /* why the last track could not play */
+/* Set by the player thread, shown once by the UI thread. */
+static volatile int list_ended, keys_refused;
 
 /* Play order over the queue: identity, or a shuffle that starts with the
  * track the user picked. Repeat: 0 off, 1 the queue, 2 the current track. */
@@ -1172,15 +1174,22 @@ static int player_thread(SceSize args, void *argp)
             /* Unplayable track: skip ahead, but give up after a few in a row. */
             last_error = ret;
             play_state = PS_ERROR;
-            if (++failures >= 3) continue;
+            if (++failures >= 3) {
+                if (ret == SESSION_KEY_REFUSED) keys_refused = 1;
+                continue;
+            }
             sceKernelDelayThread(500000);
         } else {
             failures = 0;
             play_state = PS_PLAYING;
         }
         int after = next_index(idx, ret >= 0);
-        if (after >= 0) request_index = after;
-        else play_state = PS_IDLE;
+        if (after >= 0) {
+            request_index = after;
+        } else {
+            play_state = PS_IDLE;
+            list_ended = 1;
+        }
     }
     return 0;
 }
@@ -1633,8 +1642,9 @@ static void sync_state(void)
         if (play_state == PS_ERROR)
             copy_text(n->album, sizeof n->album,
                       last_error == PLAYER_ERR_NO_MEMORY ? "Couldn't play: not enough memory"
+                      : last_error == SESSION_KEY_REFUSED ? "Spotify refused this track for this account"
                       : last_error <= -4 && last_error > -10
-                          ? "Spotify refused this track (Premium needed?)"
+                          ? "Couldn't get this track from Spotify"
                           : last_error == -2 ? "No playable version of this track"
                           : "Couldn't play this track");
         else
@@ -1724,6 +1734,14 @@ static void sync_state(void)
     }
 
     site_finished();
+    if (list_ended) {
+        list_ended = 0;
+        ui_toast(&xmb, "End of the list");
+    }
+    if (keys_refused) {
+        keys_refused = 0;
+        ui_toast(&xmb, "Spotify refuses keys to this account");
+    }
     if (open_group == PREF_GROUP_ABOUT && update_state == UPDATE_INSTALLING) fill_options();
     if (open_group == PREF_GROUP_GALLERY && gallery_count >= 0 && xmb.lists[UI_CAT_SETTINGS][1].loading)
         fill_options();
@@ -2327,9 +2345,12 @@ static int handle(const ui_event *e)
     case UI_EV_PAUSE:
         control.paused = !control.paused;
         break;
-    case UI_EV_NEXT:
-        start_track(next_index(current_index, 0));
+    case UI_EV_NEXT: {
+        const int next = next_index(current_index, 0);
+        if (next < 0 && current_index >= 0) ui_toast(&xmb, "End of the list");
+        start_track(next);
         break;
+    }
     case UI_EV_PREV:
         /* Restart the song if it has been playing a while, else go back. */
         start_track(control.position_ms > 3000 ? current_index : prev_index(current_index));

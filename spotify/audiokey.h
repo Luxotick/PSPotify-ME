@@ -5,6 +5,10 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* Spotify answered with an error packet (code 0x0001): the key is refused,
+ * unlike the other negative returns, which are network failures. */
+#define AUDIOKEY_REFUSED (-3)
+
 int spotify_request_audio_key(spotify_session *session,
                               const uint8_t *file_id,
                               const uint8_t *track_gid,

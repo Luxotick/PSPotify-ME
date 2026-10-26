@@ -201,12 +201,20 @@ typedef struct {
 } resolved_track;
 
 static resolved_track prefetched;      /* valid when prefetched.id[0] */
+
+/* Spotify refuses audio keys (0x0001) to newer accounts outright, and to
+ * older ones when they ask too often; asking again at once, or after a
+ * reconnect, only keeps the refusals coming (librespot #1649). After a
+ * refusal the next request waits 3, 5, then 10 s. */
+static int key_refusals;
+static SceInt64 next_key_at;
 static char prefetch_id[24];
 static SceInt64 prefetch_at;
 
 /* Metadata -> Ogg Vorbis file -> audio key -> CDN URLs. Serialised by
- * resolve_lock (the player and the prefetcher both call it). */
-static int resolve_track(spotify_ctx *c, const char *track_id, resolved_track *out)
+ * resolve_lock (the player and the prefetcher both call it). may_wait: the
+ * player waits out a key back-off; the prefetcher gives up instead. */
+static int resolve_track(spotify_ctx *c, const char *track_id, resolved_track *out, int may_wait)
 {
     static spotify_audio_file files[16];
     if (sceKernelGetSystemTimeWide() - c->tokens_at > TOKEN_RENEW_US) renew_tokens(c);
@@ -232,15 +240,32 @@ static int resolve_track(spotify_ctx *c, const char *track_id, resolved_track *o
 
     uint8_t gid[SPOTIFY_GID_LEN];
     if (spotify_base62_to_gid(track_id, gid) < 0) return -3;
+    const SceInt64 key_wait = next_key_at - sceKernelGetSystemTimeWide();
+    if (key_wait > 0) {
+        if (!may_wait) return SESSION_KEY_REFUSED;
+        log_printf("SESSION: waiting %u ms before the next key request\n", (unsigned int)(key_wait / 1000));
+        sceKernelDelayThread((SceUInt)key_wait);
+    }
     ap_acquire();
     int ret = c->ap_connected ? spotify_request_audio_key(&c->ap, file->file_id, gid, out->key) : -1;
-    if (ret < 0) {
+    if (ret < 0 && ret != AUDIOKEY_REFUSED) {
+        /* A network failure: the AP connection may be gone. */
         log_printf("SESSION: audio key failed %d, reconnecting AP\n", ret);
         ret = ap_login(c);
         if (ret == 0) ret = spotify_request_audio_key(&c->ap, file->file_id, gid, out->key);
     }
     ap_release();
+    if (ret == AUDIOKEY_REFUSED) {
+        static const int backoff_s[] = { 3, 5, 10 };
+        const int step = key_refusals < 2 ? key_refusals : 2;
+        ++key_refusals;
+        next_key_at = sceKernelGetSystemTimeWide() + (SceInt64)backoff_s[step] * 1000000;
+        log_printf("SESSION: key refused (%d in a row), next request in %d s\n", key_refusals,
+                   backoff_s[step]);
+        return SESSION_KEY_REFUSED;
+    }
     if (ret < 0) return ret < -4 ? ret : -4;
+    key_refusals = 0;
 
     out->url_count = spotify_storage_resolve(c->client_token, c->access_token, file->file_id,
                                              out->cdn_urls[0], sizeof out->cdn_urls[0],
@@ -258,13 +283,20 @@ static int keepalive_thread(SceSize args, void *argp)
     while (!c->keepalive_quit) {
         sceKernelDelayThread(500000);
         service_ap(c);
+        /* Renew before the hour is up even when no track starts, so browsing
+         * and search keep working in a long session. */
+        if (sceKernelGetSystemTimeWide() - c->tokens_at > TOKEN_RENEW_US) {
+            sceKernelWaitSema(resolve_lock, 1, NULL);
+            if (sceKernelGetSystemTimeWide() - c->tokens_at > TOKEN_RENEW_US) renew_tokens(c);
+            sceKernelSignalSema(resolve_lock, 1);
+        }
         if (prefetch_id[0] && sceKernelGetSystemTimeWide() >= prefetch_at) {
             char id[24];
             snprintf(id, sizeof id, "%s", prefetch_id);
             prefetch_id[0] = '\0';
             sceKernelWaitSema(resolve_lock, 1, NULL);
             int already = strcmp(prefetched.id, id) == 0;
-            int ret = already ? 0 : resolve_track(c, id, &scratch);
+            int ret = already ? 0 : resolve_track(c, id, &scratch, 0);
             if (!already && ret == 0) prefetched = scratch;
             sceKernelSignalSema(resolve_lock, 1);
             log_printf("SESSION: prefetch %s %s\n", id, ret == 0 ? "ready" : "failed");
@@ -294,7 +326,7 @@ int spotify_ctx_play(spotify_ctx *c, const char *track_id, player_control *contr
         track = prefetched;
         prefetched.id[0] = '\0';
     } else {
-        ret = resolve_track(c, track_id, &track);
+        ret = resolve_track(c, track_id, &track, 1);
     }
     sceKernelSignalSema(resolve_lock, 1);
     if (ret < 0) return ret;
