@@ -478,8 +478,14 @@ static int collect_files(const uint8_t *track, size_t track_len,
     pb_reader r;
     pb_field f;
     int count = 0;
+    uint8_t gid[SPOTIFY_GID_LEN];
+    int have_gid = 0;
     pb_init(&r, track, track_len);
     while (pb_next(&r, &f) == 1) {
+        if (f.field == 1 && f.wire == 2 && f.len == SPOTIFY_GID_LEN) {
+            memcpy(gid, f.data, SPOTIFY_GID_LEN);
+            have_gid = 1;
+        }
         if (f.field == 2 && f.wire == 2 && depth == 0)
             log_printf("TRACK: \"%.*s\"\n", (int)(f.len > 60 ? 60 : f.len), (const char *)f.data);
         if (f.field == 12 && f.wire == 2 && count < max_files) {
@@ -498,6 +504,11 @@ static int collect_files(const uint8_t *track, size_t track_len,
             }
             if (have_id) ++count;
         }
+    }
+    /* Every file found at this level belongs to this track (or alternative). */
+    for (int i = 0; i < count; ++i) {
+        files[i].has_gid = have_gid;
+        if (have_gid) memcpy(files[i].track_gid, gid, SPOTIFY_GID_LEN);
     }
     if (count > 0 || depth > 0) return count;
 

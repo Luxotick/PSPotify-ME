@@ -23,6 +23,10 @@
 typedef struct {
     uint8_t file_id[SPOTIFY_FILE_ID_LEN];
     int format;
+    /* The track the file belongs to: the requested one, or the alternative
+     * Spotify plays in its place. Its key must be asked for with this id. */
+    uint8_t track_gid[SPOTIFY_GID_LEN];
+    int has_gid;
 } spotify_audio_file;
 
 const char *spotify_format_name(int format);

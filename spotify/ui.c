@@ -1144,6 +1144,11 @@ static int player_thread(SceSize args, void *argp)
             sceKernelDelayThread(20000);
             continue;
         }
+        if (skipping) {
+            skipping = 0;
+            sceKernelDelayThread(400000);
+            if (request_index != idx) continue;     /* skipped again meanwhile */
+        }
         request_index = -1;
         current_index = idx;
         log_printf("UI: player starts queue[%d] %s\n", idx, queue[idx].id);
@@ -1192,6 +1197,19 @@ static int player_thread(SceSize args, void *argp)
         }
     }
     return 0;
+}
+
+/* Next/previous: like start_track, but the player waits a moment first, so
+ * a burst of skips asks Spotify for one audio key instead of one per song
+ * passed over (quick key requests get refused). */
+static volatile int skipping;
+
+static void skip_to(int queue_idx)
+{
+    if (queue_idx < 0 || queue_idx >= queue_len) return;
+    skipping = 1;
+    request_index = queue_idx;
+    control.stop = 1;
 }
 
 static void start_track(int queue_idx)
@@ -1907,10 +1925,10 @@ static void handle_connect(void)
         control.paused = 0;
         break;
     case CONNECT_NEXT:
-        start_track(next_index(current_index, 0));
+        skip_to(next_index(current_index, 0));
         break;
     case CONNECT_PREV:
-        start_track(control.position_ms > 3000 ? current_index : prev_index(current_index));
+        skip_to(control.position_ms > 3000 ? current_index : prev_index(current_index));
         break;
     case CONNECT_SEEK:
         control.seek_ms = c.value;
@@ -2348,12 +2366,12 @@ static int handle(const ui_event *e)
     case UI_EV_NEXT: {
         const int next = next_index(current_index, 0);
         if (next < 0 && current_index >= 0) ui_toast(&xmb, "End of the list");
-        start_track(next);
+        skip_to(next);
         break;
     }
     case UI_EV_PREV:
         /* Restart the song if it has been playing a while, else go back. */
-        start_track(control.position_ms > 3000 ? current_index : prev_index(current_index));
+        skip_to(control.position_ms > 3000 ? current_index : prev_index(current_index));
         break;
     case UI_EV_VOLUME:
         set_volume(e->value);
@@ -2425,9 +2443,9 @@ static void handle_remote(void)
     held = key;
     if (key & PSP_HPRM_HOLD) return;
     if ((pressed & PSP_HPRM_PLAYPAUSE) && current_index >= 0) control.paused = !control.paused;
-    if (pressed & PSP_HPRM_FORWARD) start_track(next_index(current_index, 0));
+    if (pressed & PSP_HPRM_FORWARD) skip_to(next_index(current_index, 0));
     if (pressed & PSP_HPRM_BACK)
-        start_track(control.position_ms > 3000 ? current_index : prev_index(current_index));
+        skip_to(control.position_ms > 3000 ? current_index : prev_index(current_index));
 }
 
 static unsigned read_buttons(void)

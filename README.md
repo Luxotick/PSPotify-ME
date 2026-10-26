@@ -170,7 +170,6 @@ BL, SD, unknown images, partial inspection failures and unsupported firmware ref
 - **New interface on other models:** the new interface has been tested on a PSP-3000 only. It uses a little more memory, which matters most on the 32 MB PSP-1000. Logs from other models are welcome.
 - **Liked Songs:** a large Liked Songs list can take a while to load completely when Spotify's servers are slow. It fills in 120 songs at a time, and opening a playlist or searching does not wait for it.
 - **"Spotify refused this track for this account":** since October 2026 Spotify refuses the audio key (error `0x0001`) to some accounts, even with Premium, in every third-party player that plays the way this app does (see [librespot #1649](https://github.com/librespot-org/librespot/issues/1649)). It mostly hits newer accounts; older ones keep working. There is no known fix for an affected account. The app waits a little longer after each refusal, since asking again at once makes Spotify refuse more often.
-- **Region-restricted tracks:** when Spotify replaces a track with an alternative version, the key is still requested with the original track's ID. Those tracks may fail even on Premium.
 - **PSP Go internal storage:** the PSP Go was tested from a Memory Stick Micro. Running from internal storage should work but has not been tested.
 
 ### TODO
@@ -179,7 +178,6 @@ BL, SD, unknown images, partial inspection failures and unsupported firmware ref
 - Add songs to playlists.
 - Keep queued songs when you start another list.
 - Search for artists, albums and playlists, not only songs.
-- Request keys for alternative tracks with the alternative's ID.
 
 ### Limitations
 

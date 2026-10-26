@@ -238,8 +238,11 @@ static int resolve_track(spotify_ctx *c, const char *track_id, resolved_track *o
         return -2;
     }
 
+    /* An alternative's key is asked for with the alternative's id; with the
+     * original id Spotify refuses it. */
     uint8_t gid[SPOTIFY_GID_LEN];
-    if (spotify_base62_to_gid(track_id, gid) < 0) return -3;
+    if (file->has_gid) memcpy(gid, file->track_gid, SPOTIFY_GID_LEN);
+    else if (spotify_base62_to_gid(track_id, gid) < 0) return -3;
     const SceInt64 key_wait = next_key_at - sceKernelGetSystemTimeWide();
     if (key_wait > 0) {
         if (!may_wait) return SESSION_KEY_REFUSED;
