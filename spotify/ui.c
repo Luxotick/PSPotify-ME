@@ -105,6 +105,8 @@ static volatile int start_at_ms, start_paused;
 
 static player_control control;
 static volatile int request_index = -1;
+/* The request came from next/previous: see skip_to. */
+static volatile int skipping;
 static volatile int current_index = -1;
 static volatile play_state_t play_state = PS_IDLE;
 static volatile int player_quit;
@@ -1202,7 +1204,6 @@ static int player_thread(SceSize args, void *argp)
 /* Next/previous: like start_track, but the player waits a moment first, so
  * a burst of skips asks Spotify for one audio key instead of one per song
  * passed over (quick key requests get refused). */
-static volatile int skipping;
 
 static void skip_to(int queue_idx)
 {
